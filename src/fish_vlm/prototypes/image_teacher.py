@@ -27,25 +27,36 @@ def build_image_teacher_cache(
     embeddings: list[torch.Tensor] = []
     filenames: list[str] = []
     model = model.to(device).eval()
-    for batch in loader:
-        batch_names = list(batch["filename"])
-        if batch.get("species_index") is None:
-            raise ValueError("Teacher cache accepts only labelled training batches")
-        embeddings.append(encode_bioclip_images(model, batch["bioclip_image"].to(device)).cpu())
-        filenames.extend(batch_names)
-    if len(filenames) != len(set(filenames)):
-        raise ValueError("Duplicate filenames in teacher cache input")
-    matrix = torch.cat(embeddings).to(storage_dtype) if embeddings else torch.empty((0, 0), dtype=storage_dtype)
-    cache = {
-        "embeddings": matrix,
-        "filenames": filenames,
-        "filename_to_index": {name: index for index, name in enumerate(filenames)},
-        "checkpoint": checkpoint,
-        "transform_hash": transform_hash,
-        "normalised": True,
-    }
-    torch_save_atomic(cache, output_path)
-    return cache
+    if Path(output_path).exists():
+        try:
+            return load_image_teacher_cache(
+                output_path,
+                expected_filenames=[name for batch in loader for name in batch["filename"]],
+                checkpoint=checkpoint,
+                transform_hash=transform_hash,
+            )
+        except ValueError as e:
+            raise ValueError(f"Existing image-teacher cache at {output_path} is invalid: {e}")
+    else:
+        for batch in loader:
+            batch_names = list(batch["filename"])
+            if batch.get("species_index") is None:
+                raise ValueError("Teacher cache accepts only labelled training batches")
+            embeddings.append(encode_bioclip_images(model, batch["bioclip_image"].to(device)).cpu())
+            filenames.extend(batch_names)
+        if len(filenames) != len(set(filenames)):
+            raise ValueError("Duplicate filenames in teacher cache input")
+        matrix = torch.cat(embeddings).to(storage_dtype) if embeddings else torch.empty((0, 0), dtype=storage_dtype)
+        cache = {
+            "embeddings": matrix,
+            "filenames": filenames,
+            "filename_to_index": {name: index for index, name in enumerate(filenames)},
+            "checkpoint": checkpoint,
+            "transform_hash": transform_hash,
+            "normalised": True,
+        }
+        torch_save_atomic(cache, output_path)
+        return cache
 
 
 def load_image_teacher_cache(

@@ -6,7 +6,7 @@ data:
   root_dir: "/faststorage/project/worm-species/fish-data"
   images_dir: images
   labels_json: label_train.json
-  descriptions_json: descriptions_all.json
+  descriptions_json: descriptions.json
   all_classes_pickle: all_classes.pkl
   train_split: splits/train.pkl
   test_split: splits/test.pkl
@@ -29,7 +29,7 @@ model:
     checkpoint_path: null
     trainable_scope: frozen
   bioclip:
-    checkpoint: hf-hub:imageomics/bioclip
+    checkpoint: hf-hub:imageomics/bioclip-2
     freeze_text_encoder: true
     freeze_image_encoder: true
   temperature: 0.07
@@ -53,8 +53,8 @@ model:
 training:
   stage: projection_only
   epochs: 30
-  batch_size: 128
-  eval_batch_size: 128
+  batch_size: 512
+  eval_batch_size: 512
   lr: 0.0003
   weight_decay: 0.01
   use_amp: true
@@ -129,15 +129,14 @@ wandb:
   log_detailed_every: 5
 
 slurm:
-  job_name: fish-vlm
+  job_name: fish-dino-bioclip
   gpus: 2
-  cpus: 16
-  memory: 64G
-  time_limit: "24:00:00"
-  partition: null
-  account: null
-  modules: []
-  environment_activate: null
+  cpus: 32
+  memory: 96G
+  time_limit: "4:00:00"
+  partition: gpu-l40s,gpu-h200
+  account: worm-species
+  environment_activate: source .venv/bin/activate
   work_dir: .
   log_dir: outputs/slurm
   script_dir: outputs/slurm

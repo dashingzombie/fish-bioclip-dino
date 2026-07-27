@@ -10,7 +10,7 @@ import torch
 from fish_vlm.models.bioclip import encode_bioclip_text
 from fish_vlm.utils.hashing import prompts_hash
 from fish_vlm.utils.io import read_json, torch_save_atomic
-
+from fish_vlm.models.bioclip import _embedding_dimension
 
 REQUIRED_KEYS = {
     "embeddings", "species_names", "species_to_index", "checkpoint",
@@ -27,34 +27,49 @@ def build_text_prototype_cache(
     checkpoint: str,
     output_path: str | Path,
     *,
-    batch_size: int = 128,
+    batch_size: int = 1024,
     device: torch.device | str = "cpu",
 ) -> dict[str, Any]:
     """Encode exactly one canonical prompt for every ordered species."""
+    model = model.to(device)
     names = list(species_names)
     if names != sorted(names) or len(names) != len(set(names)):
         raise ValueError("species_names must be unique and sorted")
     missing = sorted(set(names) - set(prompts))
     if missing:
         raise ValueError(f"Missing canonical prompts: {missing}")
-    model = model.to(device)
-    chunks: list[torch.Tensor] = []
-    for start in range(0, len(names), batch_size):
-        texts = [prompts[name] for name in names[start : start + batch_size]]
-        tokens = tokenizer(texts).to(device)
-        chunks.append(encode_bioclip_text(model, tokens).cpu())
-    embeddings = torch.cat(chunks) if chunks else torch.empty((0, 0))
-    cache = {
-        "embeddings": embeddings,
-        "species_names": names,
-        "species_to_index": {name: index for index, name in enumerate(names)},
-        "checkpoint": checkpoint,
-        "embedding_dim": int(embeddings.shape[-1]),
-        "prompt_hash": prompts_hash(prompts, names),
-        "normalised": True,
-    }
-    torch_save_atomic(cache, output_path)
-    return cache
+            
+    #check if it already exists and is valid
+    if Path(output_path).exists():
+        try:
+            return load_text_prototype_cache(
+                output_path,
+                species_names=species_names,
+                checkpoint=checkpoint,
+                prompt_hash=prompts_hash(prompts, species_names),
+                embedding_dim=_embedding_dimension(model)
+            )
+        except ValueError as e:
+            raise ValueError(f"Existing text prototype cache at {output_path} is invalid: {e}")
+    else:
+       
+        chunks: list[torch.Tensor] = []
+        for start in range(0, len(names), batch_size):
+            texts = [prompts[name] for name in names[start : start + batch_size]]
+            tokens = tokenizer(texts).to(device)
+            chunks.append(encode_bioclip_text(model, tokens).cpu())
+        embeddings = torch.cat(chunks) if chunks else torch.empty((0, 0))
+        cache = {
+            "embeddings": embeddings,
+            "species_names": names,
+            "species_to_index": {name: index for index, name in enumerate(names)},
+            "checkpoint": checkpoint,
+            "embedding_dim": int(embeddings.shape[-1]),
+            "prompt_hash": prompts_hash(prompts, names),
+            "normalised": True,
+        }
+        torch_save_atomic(cache, output_path)
+        return cache
 
 
 def load_text_prototype_cache(

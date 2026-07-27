@@ -57,10 +57,10 @@ validate-submission:
 		--submission outputs/submissions/prediction.json --config $(CONFIG)
 
 slurm-dry-run:
-	$(PYTHON) -m fish_vlm.cli slurm --config configs/slurm/ghpc.yaml --dry-run
+	$(PYTHON) -m fish_vlm.cli slurm --config configs/slurm/genome.yaml --dry-run
 
 slurm-submit:
-	$(PYTHON) -m fish_vlm.cli slurm --config configs/slurm/ghpc.yaml
+	$(PYTHON) -m fish_vlm.cli slurm --config configs/slurm/genome.yaml
 
 sweep-dry-run:
 	$(PYTHON) -m fish_vlm.cli sweep --config configs/sweeps/multimodal_pipeline.yaml --dry-run
@@ -76,3 +76,4 @@ run-all-slurm:
 
 run-all-slurm-dry-run:
 	$(PYTHON) scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus $(GPUS) --dry-run
+

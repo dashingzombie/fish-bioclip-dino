@@ -2,6 +2,8 @@
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
+
+
 [project]
 name = "fish-dino-bioclip"
 version = "0.1.0"
@@ -24,6 +26,8 @@ dependencies = [
   "wandb>=0.17",
 ]
 
+
+
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
 
@@ -37,3 +41,4 @@ include = ["fish_vlm*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+

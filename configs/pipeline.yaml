@@ -5,9 +5,9 @@ workflow:
   local_gpus: 1
   preparation_gpus: 1
   final_gpus: 1
-  cpus: 16
+  cpus: 40
   memory: 96G
-  time_limit: "24:00:00"
+  time_limit: "4:00:00"
 
   training_stages:
     - name: projection_only

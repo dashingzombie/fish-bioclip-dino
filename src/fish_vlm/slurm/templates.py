@@ -7,38 +7,99 @@ from typing import Any
 
 
 def render_batch_script(config: dict[str, Any], training_config: str) -> str:
-    """Render a one-node torchrun job with explicit resources."""
-    slurm = config["slurm"]
+    """Render a one-node torchrun job, optionally as a SLURM array."""
+    slurm = config["workflow"]
     gpus = int(slurm.get("gpus", 2))
+
+    array_configs = [
+        str(path) for path in slurm.training_stages.get("config", [])
+    ]
+    is_array = bool(array_configs)
+
     lines = [
         "#!/usr/bin/env bash",
         f"#SBATCH --job-name={slurm.get('job_name', 'fish-vlm')}",
+        f"#SBATCH --account={slurm.get('account', 'worm-species')}",
+        f"#SBATCH --partition={slurm.get('partition', 'gpu-l40s,gpu-h200')}",
         "#SBATCH --nodes=1",
         f"#SBATCH --gres=gpu:{gpus}",
         f"#SBATCH --cpus-per-task={int(slurm.get('cpus', 16))}",
         f"#SBATCH --mem={slurm.get('memory', '64G')}",
         f"#SBATCH --time={slurm.get('time_limit', '24:00:00')}",
-        f"#SBATCH --output={slurm.get('log_dir', 'outputs/slurm')}/%x-%j.out",
     ]
-    for optional, directive in (("partition", "partition"), ("account", "account")):
-        if slurm.get(optional):
-            lines.append(f"#SBATCH --{directive}={slurm[optional]}")
+
+
+    if is_array:
+        array_spec = f"0-{len(array_configs) - 1}"
+
+        max_parallel = slurm.get("array_max_parallel")
+        if max_parallel is not None:
+            max_parallel = int(max_parallel)
+            if max_parallel < 1:
+                raise ValueError("slurm.array_max_parallel must be at least 1")
+            array_spec += f"%{max_parallel}"
+
+        lines.append(f"#SBATCH --array={array_spec}")
+        lines.append(
+            f"#SBATCH --output="
+            f"{slurm.get('log_dir', 'outputs/slurm')}/%x-%A_%a.out"
+            f"#SBATCH --error="
+            f"{slurm.get('log_dir', 'outputs/slurm')}/%x-%A_%a.err"
+        )
+    else:
+        lines.append(
+            f"#SBATCH --output="
+            f"{slurm.get('log_dir', 'outputs/slurm')}/%x-%j.out"
+            f"#SBATCH --error="
+            f"{slurm.get('log_dir', 'outputs/slurm')}/%x-%j.err"
+        )
+
     lines.extend(
         [
+            "",
             "set -euo pipefail",
             f"cd {shlex.quote(str(slurm.get('work_dir', '.')))}",
         ]
     )
+
     modules = slurm.get("modules", [])
     if modules:
         lines.append("module purge")
-        lines.extend(f"module load {shlex.quote(str(module))}" for module in modules)
-    if slurm.get("environment_activate"):
-        lines.append(str(slurm["environment_activate"]))
+        lines.extend(
+            f"module load {shlex.quote(str(module))}"
+            for module in modules
+        )
+
+    if environment_activate := slurm.get("environment_activate"):
+        lines.append(str(environment_activate))
+
+    if is_array:
+        lines.append("")
+        lines.append("TRAINING_CONFIGS=(")
+        lines.extend(
+            f"    {shlex.quote(path)}"
+            for path in array_configs
+        )
+        lines.append(")")
+        lines.append(
+            'TRAINING_CONFIG="${TRAINING_CONFIGS[$SLURM_ARRAY_TASK_ID]}"'
+        )
+        lines.append(
+            'echo "Array task: ${SLURM_ARRAY_TASK_ID}"'
+        )
+        lines.append(
+            'echo "Training config: ${TRAINING_CONFIG}"'
+        )
+    else:
+        lines.append(
+            f"TRAINING_CONFIG={shlex.quote(training_config)}"
+        )
+
     lines.append(
-        f"torchrun --standalone --nproc_per_node={gpus} -m fish_vlm.cli train "
-        f"--config {shlex.quote(training_config)}"
+        f'torchrun --standalone --nproc_per_node={gpus} '
+        f'-m fish_vlm.cli train --config "$TRAINING_CONFIG"'
     )
+
     return "\n".join(lines) + "\n"
 
 
@@ -54,8 +115,10 @@ def render_workflow_batch_script(
     workflow = config["workflow"]
     lines = [
         "#!/usr/bin/env bash",
+        f"#SBATCH --account={slurm.get('account', 'worm-species')}",
         f"#SBATCH --job-name={job_name}",
         "#SBATCH --nodes=1",
+        f"#SBATCH --partition={slurm.get('partition', 'gpu-l40s,gpu-h200')}"
     ]
     if gpus > 0:
         lines.append(f"#SBATCH --gres=gpu:{gpus}")
@@ -65,11 +128,10 @@ def render_workflow_batch_script(
             f"#SBATCH --mem={workflow.get('memory', slurm.get('memory', '64G'))}",
             f"#SBATCH --time={workflow.get('time_limit', slurm.get('time_limit', '24:00:00'))}",
             f"#SBATCH --output={slurm.get('log_dir', 'outputs/slurm')}/%x-%j.out",
+            f"#SBATCH --error={slurm.get('log_dir', 'outputs/slurm')}/%x-%j.err",
         ]
     )
-    for optional in ("partition", "account"):
-        if slurm.get(optional):
-            lines.append(f"#SBATCH --{optional}={slurm[optional]}")
+    
     lines.extend(
         [
             "set -euo pipefail",
