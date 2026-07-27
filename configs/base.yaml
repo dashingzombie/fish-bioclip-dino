@@ -1,0 +1,143 @@
+seed: 42
+cache_dir: cache
+output_dir: outputs
+
+data:
+  root_dir: "/faststorage/project/worm-species/fish-data"
+  images_dir: images
+  labels_json: label_train.json
+  descriptions_json: descriptions_all.json
+  all_classes_pickle: all_classes.pkl
+  train_split: splits/train.pkl
+  test_split: splits/test.pkl
+  unseen_split: splits/unseen.pkl
+  processed_dir: processed
+  manual_overrides: manual/canonical_prompt_overrides.json
+
+text:
+  canonical_prompts_path: data/processed/canonical_prompts.json
+  manual_overrides_path: data/manual/canonical_prompt_overrides.json
+  one_prompt_per_species: true
+  exclude_nonvisual_sentences: true
+  fail_on_missing_prompt: true
+  max_tokens: 220
+
+model:
+  dino:
+    name: dinov3_vitb16
+    pretrained: true
+    checkpoint_path: null
+    trainable_scope: frozen
+  bioclip:
+    checkpoint: hf-hub:imageomics/bioclip
+    freeze_text_encoder: true
+    freeze_image_encoder: true
+  temperature: 0.07
+  projector:
+    type: mlp
+    hidden_dim: 2048
+    dropout: 0.1
+    normalise: true
+  supervised_head:
+    enabled: false
+    type: cosine
+    initial_scale: 20.0
+  bioclip_image_path:
+    enabled: true
+    mode: frozen_zero_shot
+    adapter:
+      enabled: false
+      hidden_dim: 512
+      dropout: 0.1
+
+training:
+  stage: projection_only
+  epochs: 30
+  batch_size: 128
+  eval_batch_size: 128
+  lr: 0.0003
+  weight_decay: 0.01
+  use_amp: true
+  amp_dtype: bfloat16
+  num_workers: 16
+  persistent_workers: true
+  conservative_augmentation: true
+  teacher_cache_dtype: float16
+  early_stopping_patience: 10
+  checkpoint_name: best.pt
+  metrics_name: best.json
+  distributed:
+    enabled: true
+    backend: nccl
+
+loss:
+  dino_text_classification:
+    enabled: true
+    weight: 1.0
+  bioclip_image_teacher:
+    enabled: true
+    weight: 0.25
+    method: cosine
+    mode: cached
+  supervised_species:
+    enabled: false
+    weight: 0.5
+  native_bioclip_text:
+    enabled: false
+    weight: 1.0
+  branch_consistency:
+    enabled: false
+    weight: 0.05
+    method: js
+
+validation:
+  seen_fraction: 0.10
+  selection_branch: fused_text
+  pseudo_unseen:
+    enabled: true
+    strategy: species_holdout
+    holdout_fraction: 0.20
+    seeds: [7, 42, 123]
+    split_path: auto
+  selection_metric: estimated_overall_accuracy
+
+evaluation:
+  split: train
+  candidate_set: seen
+  official_split: null
+
+inference:
+  generalised_enabled: false
+  test:
+    candidate_set: seen
+    mode: supervised_plus_text
+  unseen:
+    candidate_set: unseen
+    mode: fused_text
+
+fusion:
+  dino_text_weight: 0.5
+  supervised_weight: 0.7
+
+wandb:
+  enabled: true
+  project: fish-dino-bioclip
+  mode: online
+  group: multimodal-pipeline
+  name: null
+  tags: [fish, dino, bioclip]
+  log_detailed_every: 5
+
+slurm:
+  job_name: fish-vlm
+  gpus: 2
+  cpus: 16
+  memory: 64G
+  time_limit: "24:00:00"
+  partition: null
+  account: null
+  modules: []
+  environment_activate: null
+  work_dir: .
+  log_dir: outputs/slurm
+  script_dir: outputs/slurm

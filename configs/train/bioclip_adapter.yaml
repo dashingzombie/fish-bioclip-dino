@@ -1,0 +1,24 @@
+defaults: [../base.yaml]
+training:
+  stage: bioclip_adapter
+  checkpoint_name: best-adapter.pt
+  metrics_name: adapter.json
+  epochs: 15
+  lr: 0.0001
+  weight_decay: 0.01
+model:
+  dino:
+    trainable_scope: frozen
+  bioclip_image_path:
+    enabled: true
+    mode: adapter
+    adapter:
+      enabled: true
+      hidden_dim: 512
+      dropout: 0.1
+loss:
+  dino_text_classification: {enabled: false, weight: 1.0}
+  bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
+  native_bioclip_text: {enabled: true, weight: 1.0}
+validation:
+  selection_branch: bioclip_native

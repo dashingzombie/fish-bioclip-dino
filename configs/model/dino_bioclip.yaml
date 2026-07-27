@@ -1,0 +1,27 @@
+model:
+  dino:
+    name: dinov3_vitb16
+    pretrained: true
+    checkpoint_path: null
+    trainable_scope: frozen
+  bioclip:
+    checkpoint: hf-hub:imageomics/bioclip
+    freeze_text_encoder: true
+    freeze_image_encoder: true
+  projector:
+    type: mlp
+    hidden_dim: 2048
+    dropout: 0.1
+    normalise: true
+  supervised_head:
+    enabled: false
+    type: cosine
+    initial_scale: 20.0
+  bioclip_image_path:
+    enabled: true
+    mode: frozen_zero_shot
+    adapter:
+      enabled: false
+      hidden_dim: 512
+      dropout: 0.1
+

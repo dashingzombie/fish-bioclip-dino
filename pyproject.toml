@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fish-dino-bioclip"
+version = "0.1.0"
+description = "DINOv3 to BioCLIP alignment for seen and unseen fish classification"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Fish VLM contributors"}]
+dependencies = [
+  "torch>=2.2",
+  "torchvision>=0.17",
+  "timm>=1.0.15",
+  "open_clip_torch>=2.30",
+  "PyYAML>=6.0",
+  "pandas>=2.0",
+  "numpy>=1.26",
+  "scikit-learn>=1.4",
+  "Pillow>=10.0",
+  "tqdm>=4.66",
+  "wandb>=0.17",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+fish-vlm = "fish_vlm.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["fish_vlm*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

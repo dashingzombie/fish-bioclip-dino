@@ -1,0 +1,17 @@
+defaults: [../base.yaml]
+training:
+  stage: projection_only
+  checkpoint_name: best-stage1.pt
+  metrics_name: stage1.json
+  epochs: 30
+  lr: 0.0003
+  weight_decay: 0.01
+loss:
+  dino_text_classification: {enabled: true, weight: 1.0}
+  bioclip_image_teacher: {enabled: true, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: false, weight: 0.5}
+model:
+  dino:
+    trainable_scope: frozen
+  supervised_head:
+    enabled: false

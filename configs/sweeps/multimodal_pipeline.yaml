@@ -1,0 +1,38 @@
+defaults: [../base.yaml]
+sweep:
+  name: multimodal-pipeline
+  phases:
+    - name: bioclip_zero_shot
+      parameters:
+        evaluation.mode: [bioclip_native]
+    - name: projector_architecture
+      parameters:
+        model.projector.type: [linear, mlp]
+    - name: alignment_objective
+      parameters:
+        loss.bioclip_image_teacher.enabled: [false, true]
+    - name: projector_learning_rate
+      parameters:
+        training.lr: [0.0001, 0.0003, 0.001]
+    - name: teacher_weight
+      parameters:
+        loss.bioclip_image_teacher.weight: [0.1, 0.25, 0.5]
+    - name: dino_adaptation
+      parameters:
+        model.dino.trainable_scope: [frozen, final_block]
+    - name: supervised_head
+      parameters:
+        model.supervised_head.enabled: [false, true]
+    - name: bioclip_adapter
+      parameters:
+        model.bioclip_image_path.mode: [frozen_zero_shot, adapter]
+    - name: inference_branch
+      parameters:
+        evaluation.mode: [dino_text, bioclip_native, fused_text]
+    - name: fusion_calibration
+      parameters:
+        calibration.enabled: [false, true]
+    - name: pseudo_unseen_seed
+      parameters:
+        validation.pseudo_unseen.seed: [7, 42, 123]
+

@@ -1,0 +1,12 @@
+data:
+  root_dir: "/faststorage/project/worm-species/fish-data"
+  images_dir: images
+  labels_json: label_train.json
+  descriptions_json: descriptions_all.json
+  all_classes_pickle: all_classes.pkl
+  train_split: splits/train.pkl
+  test_split: splits/test.pkl
+  unseen_split: splits/unseen.pkl
+  processed_dir: processed
+  manual_overrides: manual/canonical_prompt_overrides.json
+

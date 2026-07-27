@@ -1,0 +1,10 @@
+defaults: [../base.yaml]
+evaluation:
+  split: train
+  candidate_set: unseen
+  official_split: unseen
+inference:
+  unseen:
+    candidate_set: unseen
+    mode: fused_text
+

@@ -1,0 +1,15 @@
+defaults: [../train/projection_only.yaml]
+slurm:
+  job_name: fish-dino-bioclip
+  gpus: 2
+  cpus: 16
+  memory: 96G
+  time_limit: "24:00:00"
+  partition: gpu
+  account: null
+  modules: [cuda/12.4]
+  environment_activate: source .venv/bin/activate
+  work_dir: .
+  log_dir: outputs/slurm
+  script_dir: outputs/slurm
+

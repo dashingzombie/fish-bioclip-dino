@@ -1,0 +1,22 @@
+defaults: [../base.yaml]
+training:
+  stage: joint_supervised_text
+  checkpoint_name: best.pt
+  metrics_name: best.json
+  epochs: 20
+  lr: 0.0001
+  weight_decay: 0.01
+  resume_checkpoint: outputs/checkpoints/best-stage2.pt
+  parameter_groups:
+    dino_last_block: {lr: 0.00001, weight_decay: 0.0001}
+    projector: {lr: 0.0001, weight_decay: 0.01}
+    logit_scale: {lr: 0.00001, weight_decay: 0.0}
+model:
+  dino:
+    trainable_scope: final_block
+  supervised_head:
+    enabled: true
+loss:
+  dino_text_classification: {enabled: true, weight: 1.0}
+  bioclip_image_teacher: {enabled: true, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: true, weight: 0.5}

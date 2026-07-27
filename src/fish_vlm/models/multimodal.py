@@ -1,0 +1,104 @@
+"""Complete DINO/BioCLIP multimodal classifier."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import torch
+from torch import nn
+
+from fish_vlm.models.bioclip import encode_bioclip_images
+from fish_vlm.models.fusion import CalibrationParameters, fuse_seen_probabilities, fuse_text_probabilities
+
+
+@dataclass
+class ModelOutput:
+    """Branch features and logits returned by one forward pass."""
+
+    dino_features: torch.Tensor
+    projected_features: torch.Tensor
+    dino_text_logits: torch.Tensor
+    bioclip_features: torch.Tensor | None
+    bioclip_logits: torch.Tensor | None
+    supervised_logits: torch.Tensor | None
+
+
+def text_logits(embeddings: torch.Tensor, prototypes: torch.Tensor, scale: torch.Tensor | float) -> torch.Tensor:
+    """Compute float32 cosine-prototype logits."""
+    if embeddings.shape[-1] != prototypes.shape[-1]:
+        raise ValueError("Embedding and prototype dimensions differ")
+    return float(scale) * embeddings.float() @ prototypes.float().T if not torch.is_tensor(scale) else scale.float() * embeddings.float() @ prototypes.float().T
+
+
+class FishMultimodalModel(nn.Module):
+    """Coordinate DINO-text, native BioCLIP and optional supervised branches."""
+
+    def __init__(
+        self,
+        dino: nn.Module,
+        projector: nn.Module,
+        logit_scale: nn.Module,
+        *,
+        bioclip: nn.Module | None = None,
+        bioclip_adapter: nn.Module | None = None,
+        supervised_head: nn.Module | None = None,
+    ) -> None:
+        super().__init__()
+        self.dino = dino
+        self.projector = projector
+        self.logit_scale = logit_scale
+        self.bioclip = bioclip
+        self.bioclip_adapter = bioclip_adapter
+        self.supervised_head = supervised_head
+
+    def forward(
+        self,
+        dino_image: torch.Tensor,
+        prototypes: torch.Tensor,
+        bioclip_image: torch.Tensor | None = None,
+    ) -> ModelOutput:
+        from fish_vlm.models.dino import pooled_features
+
+        dino_features = pooled_features(self.dino, dino_image)
+        projected = self.projector(dino_features)
+        dino_logits = text_logits(projected, prototypes, self.logit_scale())
+        bioclip_features = None
+        bioclip_logits = None
+        if self.bioclip is not None and bioclip_image is not None:
+            bioclip_features = encode_bioclip_images(self.bioclip, bioclip_image)
+            if self.bioclip_adapter is not None:
+                bioclip_features = self.bioclip_adapter(bioclip_features)
+            bioclip_logits = text_logits(bioclip_features, prototypes, self.logit_scale())
+        supervised_logits = self.supervised_head(dino_features) if self.supervised_head is not None else None
+        return ModelOutput(
+            dino_features, projected, dino_logits, bioclip_features, bioclip_logits, supervised_logits
+        )
+
+    @staticmethod
+    def probabilities(
+        output: ModelOutput,
+        mode: str,
+        calibration: CalibrationParameters,
+    ) -> torch.Tensor:
+        """Return probabilities for an explicit inference mode."""
+        if mode == "dino_text":
+            return torch.softmax(output.dino_text_logits.float() / calibration.dino_temperature, dim=-1)
+        if mode == "bioclip_native":
+            if output.bioclip_logits is None:
+                raise ValueError("BioCLIP-native branch is unavailable")
+            return torch.softmax(output.bioclip_logits.float() / calibration.bioclip_temperature, dim=-1)
+        if mode == "fused_text":
+            if output.bioclip_logits is None:
+                raise ValueError("BioCLIP-native branch is unavailable")
+            return fuse_text_probabilities(output.dino_text_logits, output.bioclip_logits, calibration)
+        if mode == "supervised":
+            if output.supervised_logits is None:
+                raise ValueError("Supervised branch is unavailable")
+            return torch.softmax(output.supervised_logits.float() / calibration.supervised_temperature, dim=-1)
+        if mode == "supervised_plus_text":
+            if output.supervised_logits is None or output.bioclip_logits is None:
+                raise ValueError("Seen fusion requires supervised and both text branches")
+            text = fuse_text_probabilities(output.dino_text_logits, output.bioclip_logits, calibration)
+            return fuse_seen_probabilities(output.supervised_logits, text, calibration)
+        raise ValueError(f"Unknown inference mode: {mode}")
+

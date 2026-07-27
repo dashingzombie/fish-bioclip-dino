@@ -1,0 +1,12 @@
+defaults: [../base.yaml]
+evaluation:
+  split: train
+  candidate_set: seen
+  official_split: test
+inference:
+  test:
+    candidate_set: seen
+    mode: supervised_plus_text
+model:
+  supervised_head:
+    enabled: true

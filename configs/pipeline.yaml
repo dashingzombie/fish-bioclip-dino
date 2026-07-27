@@ -1,0 +1,38 @@
+defaults: [base.yaml]
+
+workflow:
+  preparation_config: configs/pipeline.yaml
+  local_gpus: 1
+  preparation_gpus: 1
+  final_gpus: 1
+  cpus: 16
+  memory: 96G
+  time_limit: "24:00:00"
+
+  training_stages:
+    - name: projection_only
+      config: configs/train/projection_only.yaml
+      checkpoint: outputs/checkpoints/best-stage1.pt
+      metrics: outputs/metrics/stage1.json
+    - name: final_block
+      config: configs/train/final_block.yaml
+      checkpoint: outputs/checkpoints/best-stage2.pt
+      metrics: outputs/metrics/stage2.json
+    - name: joint_supervised_text
+      config: configs/train/joint_supervised_text.yaml
+      checkpoint: outputs/checkpoints/best.pt
+      metrics: outputs/metrics/best.json
+    - name: bioclip_adapter
+      config: configs/train/bioclip_adapter.yaml
+      checkpoint: outputs/checkpoints/best-adapter.pt
+      metrics: outputs/metrics/adapter.json
+
+  final_checkpoint: outputs/checkpoints/best.pt
+  seen_inference_config: configs/inference/seen.yaml
+  unseen_inference_config: configs/inference/unseen.yaml
+  calibration_output: outputs/metrics/calibration.json
+  final_metrics: outputs/metrics/final_seen_evaluation.json
+  test_predictions: outputs/predictions/test.json
+  unseen_predictions: outputs/predictions/unseen.json
+  submission_output: outputs/submissions/prediction.json
+  summary_output: outputs/metrics/pipeline_summary.json

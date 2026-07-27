@@ -1,0 +1,16 @@
+defaults: [../base.yaml]
+training:
+  stage: final_block
+  checkpoint_name: best-stage2.pt
+  metrics_name: stage2.json
+  epochs: 20
+  lr: 0.0001
+  weight_decay: 0.01
+  resume_checkpoint: outputs/checkpoints/best-stage1.pt
+  parameter_groups:
+    dino_last_block: {lr: 0.00001, weight_decay: 0.0001}
+    projector: {lr: 0.0001, weight_decay: 0.01}
+    logit_scale: {lr: 0.00001, weight_decay: 0.0}
+model:
+  dino:
+    trainable_scope: final_block

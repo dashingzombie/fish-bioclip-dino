@@ -1,0 +1,12 @@
+defaults: [../base.yaml]
+evaluation:
+  candidate_set: all
+inference:
+  generalised_enabled: true
+  test:
+    candidate_set: all
+    mode: fused_text
+  unseen:
+    candidate_set: all
+    mode: fused_text
+
