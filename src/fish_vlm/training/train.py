@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,7 +55,8 @@ def _data_processed_path(config: dict[str, Any], filename: str) -> Path:
 
 
 def _cache_path(config: dict[str, Any], *parts: str) -> Path:
-    return Path(config.get("cache_dir", "cache")).expanduser().joinpath(*parts)
+    root = os.environ.get("FISH_VLM_CACHE_DIR", config.get("cache_dir", "cache"))
+    return Path(root).expanduser().joinpath(*parts)
 
 
 def _pseudo_split_path(config: dict[str, Any]) -> Path | None:
@@ -302,6 +305,8 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
         str(distributed_cfg.get("backend", "nccl")),
     )
     seed_everything(int(config["seed"]) + context.rank)
+    if context.device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
     bundle = build_runtime(config, device=context.device)
     configure_training_stage(bundle.model, config["training"]["stage"])
     labels = load_labels(config)
@@ -370,6 +375,14 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
             checkpoint=bundle.bioclip_checkpoint,
             transform_hash=transform_fingerprint(bundle.bioclip_eval_transform),
         )
+    use_bioclip_during_training = (
+        bool(config["loss"].get("native_bioclip_text", {}).get("enabled", False))
+        or bool(config["loss"].get("branch_consistency", {}).get("enabled", False))
+        or (
+            bool(teacher_cfg.get("enabled", False))
+            and teacher_cfg.get("mode") == "online"
+        )
+    )
     resume_path = config["training"].get("resume_checkpoint")
     if resume_path:
         load_checkpoint(
@@ -406,6 +419,9 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
             trainable_parameters=trainable_parameter_count(bundle.model),
         )
     best_metrics: dict[str, float] = {}
+    accumulation_steps = int(config["training"].get("gradient_accumulation_steps", 1))
+    if accumulation_steps < 1:
+        raise ValueError("training.gradient_accumulation_steps must be at least 1")
     try:
         for epoch in range(int(config["training"]["epochs"])):
             if train_sampler is not None:
@@ -418,31 +434,60 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
             running: dict[str, float] = {}
             samples = 0
             start = time.perf_counter()
-            for batch in train_loader:
+            optimizer.zero_grad(set_to_none=True)
+            batches_per_epoch = len(train_loader)
+            for batch_index, batch in enumerate(train_loader):
                 targets = batch["species_index"].to(context.device)
-                optimizer.zero_grad(set_to_none=True)
-                with torch.autocast(
-                    device_type=context.device.type,
-                    dtype=amp_dtype,
-                    enabled=use_amp,
-                ):
-                    output = model(
-                        batch["dino_image"].to(context.device, non_blocking=True),
-                        prototypes,
-                        batch["bioclip_image"].to(context.device, non_blocking=True),
-                    )
-                    teacher = None
-                    if teacher_cfg.get("enabled", False):
-                        if teacher_cfg.get("mode") == "cached":
-                            teacher = lookup_teacher_embeddings(teacher_cache, batch["filename"]).to(context.device)
-                        elif teacher_cfg.get("mode") == "online":
-                            teacher = output.bioclip_features
-                        else:
-                            raise ValueError("Teacher mode must be cached or online")
-                    result = compute_total_loss(output, targets, config["loss"], teacher_embeddings=teacher)
-                scaler.scale(result.total).backward()
-                scaler.step(optimizer)
-                scaler.update()
+                group_start = (batch_index // accumulation_steps) * accumulation_steps
+                group_size = min(accumulation_steps, batches_per_epoch - group_start)
+                update_parameters = (
+                    (batch_index + 1) % accumulation_steps == 0
+                    or batch_index + 1 == batches_per_epoch
+                )
+                sync_context = (
+                    contextlib.nullcontext()
+                    if update_parameters or not isinstance(model, DistributedDataParallel)
+                    else model.no_sync()
+                )
+                with sync_context:
+                    with torch.autocast(
+                        device_type=context.device.type,
+                        dtype=amp_dtype,
+                        enabled=use_amp,
+                    ):
+                        output = model(
+                            batch["dino_image"].to(context.device, non_blocking=True),
+                            prototypes,
+                            (
+                                batch["bioclip_image"].to(
+                                    context.device, non_blocking=True
+                                )
+                                if use_bioclip_during_training
+                                else None
+                            ),
+                        )
+                        teacher = None
+                        if teacher_cfg.get("enabled", False):
+                            if teacher_cfg.get("mode") == "cached":
+                                teacher = lookup_teacher_embeddings(
+                                    teacher_cache, batch["filename"]
+                                ).to(context.device)
+                            elif teacher_cfg.get("mode") == "online":
+                                teacher = output.bioclip_features
+                            else:
+                                raise ValueError("Teacher mode must be cached or online")
+                        result = compute_total_loss(
+                            output,
+                            targets,
+                            config["loss"],
+                            teacher_embeddings=teacher,
+                        )
+                        backward_loss = result.total / group_size
+                    scaler.scale(backward_loss).backward()
+                if update_parameters:
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
                 batch_size = len(targets)
                 samples += batch_size
                 running["loss"] = running.get("loss", 0.0) + result.total.item() * batch_size

@@ -288,6 +288,7 @@ def run_slurm_workflow(
                 job_name=f"fish-{name.replace('_', '-')}",
                 commands=commands,
                 gpus=gpus,
+                node_local_cache=name != "preparation",
             ),
         }
         for index, (name, gpus, commands) in enumerate(groups)

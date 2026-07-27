@@ -100,10 +100,16 @@ def validate_config(config: dict[str, Any]) -> None:
     unseen_mode = config["inference"].get("unseen", {}).get("mode")
     if unseen_mode in {"supervised", "supervised_plus_text"}:
         raise ConfigError("The supervised head cannot be used for unseen inference")
+    accumulation_steps = int(
+        config["training"].get("gradient_accumulation_steps", 1)
+    )
+    if accumulation_steps < 1:
+        raise ConfigError(
+            "training.gradient_accumulation_steps must be at least 1"
+        )
 
 
 def data_path(config: dict[str, Any], key: str) -> Path:
     """Resolve a data entry relative to ``data.root_dir``."""
     root = Path(config["data"]["root_dir"]).expanduser()
     return root / config["data"][key]
-

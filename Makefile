@@ -1,7 +1,7 @@
 PYTHON ?= python
 CONFIG ?= configs/base.yaml
 CHECKPOINT ?= outputs/checkpoints/best.pt
-GPUS ?= 2
+GPUS ?= 1
 
 .PHONY: install test prepare-prompts build-text-prototypes build-teacher-cache \
 	pseudo-unseen train evaluate-zero-shot evaluate calibrate infer-test infer-unseen \
@@ -76,4 +76,3 @@ run-all-slurm:
 
 run-all-slurm-dry-run:
 	$(PYTHON) scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus $(GPUS) --dry-run
-

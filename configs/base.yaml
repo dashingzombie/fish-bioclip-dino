@@ -53,8 +53,9 @@ model:
 training:
   stage: projection_only
   epochs: 30
-  batch_size: 512
-  eval_batch_size: 512
+  batch_size: 128
+  eval_batch_size: 256
+  gradient_accumulation_steps: 4
   lr: 0.0003
   weight_decay: 0.01
   use_amp: true
@@ -130,9 +131,9 @@ wandb:
 
 slurm:
   job_name: fish-dino-bioclip
-  gpus: 2
-  cpus: 32
-  memory: 96G
+  gpus: 1
+  cpus: 16
+  memory: 64G
   time_limit: "4:00:00"
   partition: gpu-l40s,gpu-h200
   account: worm-species
@@ -140,3 +141,5 @@ slurm:
   work_dir: .
   log_dir: outputs/slurm
   script_dir: outputs/slurm
+  stage_cache_on_node: true
+  node_cache_dir: fish-vlm-cache

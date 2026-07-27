@@ -5,7 +5,7 @@ model:
     checkpoint_path: null
     trainable_scope: frozen
   bioclip:
-    checkpoint: hf-hub:imageomics/bioclip
+    checkpoint: hf-hub:imageomics/bioclip-2
     freeze_text_encoder: true
     freeze_image_encoder: true
   projector:
@@ -24,4 +24,3 @@ model:
       enabled: false
       hidden_dim: 512
       dropout: 0.1
-

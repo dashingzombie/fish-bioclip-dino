@@ -23,10 +23,9 @@ def build_image_teacher_cache(
     device: torch.device | str,
     storage_dtype: torch.dtype = torch.float16,
 ) -> dict[str, Any]:
-    """Cache labelled training images only, rejecting duplicate filenames."""
+    """Cache labelled training images only, reusing a valid cache."""
     embeddings: list[torch.Tensor] = []
     filenames: list[str] = []
-    model = model.to(device).eval()
     if Path(output_path).exists():
         try:
             return load_image_teacher_cache(
@@ -35,28 +34,37 @@ def build_image_teacher_cache(
                 checkpoint=checkpoint,
                 transform_hash=transform_hash,
             )
-        except ValueError as e:
-            raise ValueError(f"Existing image-teacher cache at {output_path} is invalid: {e}")
-    else:
-        for batch in loader:
-            batch_names = list(batch["filename"])
-            if batch.get("species_index") is None:
-                raise ValueError("Teacher cache accepts only labelled training batches")
-            embeddings.append(encode_bioclip_images(model, batch["bioclip_image"].to(device)).cpu())
-            filenames.extend(batch_names)
-        if len(filenames) != len(set(filenames)):
-            raise ValueError("Duplicate filenames in teacher cache input")
-        matrix = torch.cat(embeddings).to(storage_dtype) if embeddings else torch.empty((0, 0), dtype=storage_dtype)
-        cache = {
-            "embeddings": matrix,
-            "filenames": filenames,
-            "filename_to_index": {name: index for index, name in enumerate(filenames)},
-            "checkpoint": checkpoint,
-            "transform_hash": transform_hash,
-            "normalised": True,
-        }
-        torch_save_atomic(cache, output_path)
-        return cache
+        except ValueError as error:
+            raise ValueError(
+                f"Existing image-teacher cache at {output_path} is invalid: {error}"
+            ) from error
+
+    model = model.to(device).eval()
+    for batch in loader:
+        batch_names = list(batch["filename"])
+        if batch.get("species_index") is None:
+            raise ValueError("Teacher cache accepts only labelled training batches")
+        embeddings.append(
+            encode_bioclip_images(model, batch["bioclip_image"].to(device)).cpu()
+        )
+        filenames.extend(batch_names)
+    if len(filenames) != len(set(filenames)):
+        raise ValueError("Duplicate filenames in teacher cache input")
+    matrix = (
+        torch.cat(embeddings).to(storage_dtype)
+        if embeddings
+        else torch.empty((0, 0), dtype=storage_dtype)
+    )
+    cache = {
+        "embeddings": matrix,
+        "filenames": filenames,
+        "filename_to_index": {name: index for index, name in enumerate(filenames)},
+        "checkpoint": checkpoint,
+        "transform_hash": transform_hash,
+        "normalised": True,
+    }
+    torch_save_atomic(cache, output_path)
+    return cache
 
 
 def load_image_teacher_cache(
@@ -64,21 +72,30 @@ def load_image_teacher_cache(
     *,
     expected_filenames: list[str],
     checkpoint: str,
-    transform_hash: str,
+    transform_hash: str | None,
 ) -> dict[str, Any]:
     """Validate cache identity and exact training-image coverage."""
     cache = torch.load(path, map_location="cpu", weights_only=False)
-    for key, expected in {
+    if not isinstance(cache.get("transform_hash"), str) or not cache["transform_hash"]:
+        raise ValueError("Image-teacher cache transform hash is missing")
+    expected_fields: dict[str, Any] = {
         "filenames": expected_filenames,
         "checkpoint": checkpoint,
-        "transform_hash": transform_hash,
         "normalised": True,
-    }.items():
+    }
+    if transform_hash is not None:
+        expected_fields["transform_hash"] = transform_hash
+    for key, expected in expected_fields.items():
         if cache.get(key) != expected:
             raise ValueError(f"Incompatible image-teacher cache field: {key}")
     if cache.get("filename_to_index") != {name: i for i, name in enumerate(expected_filenames)}:
         raise ValueError("Image-teacher cache filename mapping is incompatible")
-    norms = cache["embeddings"].float().norm(dim=-1)
+    embeddings = cache.get("embeddings")
+    if not isinstance(embeddings, torch.Tensor) or embeddings.ndim != 2:
+        raise ValueError("Image-teacher cache embeddings are incompatible")
+    if embeddings.shape[0] != len(expected_filenames):
+        raise ValueError("Image-teacher cache embedding count is incompatible")
+    norms = embeddings.float().norm(dim=-1)
     if len(norms) and not torch.allclose(norms, torch.ones_like(norms), atol=1e-3):
         raise ValueError("Image-teacher cache embeddings are not normalised")
     return cache
@@ -92,4 +109,3 @@ def lookup_teacher_embeddings(cache: dict[str, Any], filenames: list[str]) -> to
         raise KeyError(f"Teacher cache misses filenames: {missing}")
     indices = torch.tensor([mapping[name] for name in filenames], dtype=torch.long)
     return cache["embeddings"].index_select(0, indices).float()
-

@@ -54,6 +54,14 @@ def test_slurm_dry_run_never_calls_sbatch(monkeypatch) -> None:
     assert result["jobs"][1]["depends_on"] == "preparation"
     assert result["jobs"][1]["gpus"] == 3
     assert "--dependency" not in result["jobs"][0]["script"]
+    preparation = result["jobs"][0]["script"]
+    training = result["jobs"][1]["script"]
+    assert 'FISH_VLM_CACHE_DIR="${SHARED_CACHE_DIR}"' in preparation
+    assert 'cp -a "${SHARED_CACHE_DIR}/." "${FISH_VLM_CACHE_DIR}/"' not in preparation
+    assert 'FISH_VLM_CACHE_DIR="${SLURM_TMPDIR}"/fish-vlm-cache' in training
+    assert 'cp -a "${SHARED_CACHE_DIR}/." "${FISH_VLM_CACHE_DIR}/"' in training
+    assert 'export HF_HOME="${FISH_VLM_CACHE_DIR}/huggingface"' in training
+    assert 'export TORCH_HOME="${FISH_VLM_CACHE_DIR}/torch"' in training
 
 
 def test_slurm_submission_uses_afterok_job_ids(

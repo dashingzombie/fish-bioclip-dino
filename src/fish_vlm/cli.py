@@ -23,8 +23,15 @@ from fish_vlm.inference.predict import predict_split
 from fish_vlm.inference.submission import merge_predictions
 from fish_vlm.inference.validation import validate_submission
 from fish_vlm.models.bioclip import load_bioclip
-from fish_vlm.prototypes.image_teacher import build_image_teacher_cache
-from fish_vlm.prototypes.text import build_text_prototype_cache, load_prompts
+from fish_vlm.prototypes.image_teacher import (
+    build_image_teacher_cache,
+    load_image_teacher_cache,
+)
+from fish_vlm.prototypes.text import (
+    build_text_prototype_cache,
+    load_prompts,
+    load_text_prototype_cache,
+)
 from fish_vlm.slurm.launcher import launch_slurm
 from fish_vlm.sweeps.pipeline import run_pipeline
 from fish_vlm.training.train import (
@@ -104,28 +111,81 @@ def _build_text(config: dict[str, Any]) -> None:
     partitions = ensure_partitions(config)
     prompts = load_prompts(_data_processed_path(config, "canonical_prompts.json"))
     checkpoint = config["model"]["bioclip"]["checkpoint"]
-    model, _, _, tokenizer, _ = load_bioclip(checkpoint)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    for candidate_set in ("seen", "unseen", "all"):
-        names = getattr(partitions, f"{candidate_set}_species")
-        build_text_prototype_cache(
-            prompts,
-            names,
-            model,
-            tokenizer,
-            checkpoint,
+    cache_specs = [
+        (
+            candidate_set,
+            getattr(partitions, f"{candidate_set}_species"),
             _cache_path(config, "text", f"text_prototypes_{candidate_set}.pt"),
-            batch_size=int(config["training"].get("eval_batch_size", 128)),
-            device=device,
         )
+        for candidate_set in ("seen", "unseen", "all")
+    ]
+    missing_specs = []
+    from fish_vlm.utils.hashing import prompts_hash
+
+    for candidate_set, names, path in cache_specs:
+        if path.exists():
+            try:
+                load_text_prototype_cache(
+                    path,
+                    species_names=names,
+                    checkpoint=checkpoint,
+                    prompt_hash=prompts_hash(prompts, names),
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"Existing {candidate_set} text cache at {path} is invalid: {error}"
+                ) from error
+        else:
+            missing_specs.append((candidate_set, names, path))
+    if not missing_specs:
+        return
+
+    model, _, _, tokenizer, embedding_dim = load_bioclip(checkpoint)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    for candidate_set, names, path in cache_specs:
+        if path.exists():
+            load_text_prototype_cache(
+                path,
+                species_names=names,
+                checkpoint=checkpoint,
+                prompt_hash=prompts_hash(prompts, names),
+                embedding_dim=embedding_dim,
+            )
+        else:
+            build_text_prototype_cache(
+                prompts,
+                names,
+                model,
+                tokenizer,
+                checkpoint,
+                path,
+                batch_size=int(config["training"].get("eval_batch_size", 128)),
+                device=device,
+            )
 
 
 def _build_teacher(config: dict[str, Any]) -> None:
+    labels = load_labels(config)
+    filenames = [name for name in split_filenames(data_path(config, "train_split")) if name in labels]
+    output_path = _cache_path(config, "bioclip_images", "train_embeddings.pt")
+    checkpoint = config["model"]["bioclip"]["checkpoint"]
+    if output_path.exists():
+        try:
+            load_image_teacher_cache(
+                output_path,
+                expected_filenames=filenames,
+                checkpoint=checkpoint,
+                transform_hash=None,
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"Existing image-teacher cache at {output_path} is invalid: {error}"
+            ) from error
+        return
+
     bundle = build_runtime(config, device="cpu")
     if bundle.model.bioclip is None:
         raise ValueError("Teacher cache requires the native BioCLIP image path")
-    labels = load_labels(config)
-    filenames = [name for name in split_filenames(data_path(config, "train_split")) if name in labels]
     dataset = FishMultiViewDataset(
         filenames,
         data_path(config, "images_dir"),
@@ -149,7 +209,7 @@ def _build_teacher(config: dict[str, Any]) -> None:
         loader,
         checkpoint=bundle.bioclip_checkpoint,
         transform_hash=transform_fingerprint(bundle.bioclip_eval_transform),
-        output_path=_cache_path(config, "bioclip_images", "train_embeddings.pt"),
+        output_path=output_path,
         device=device,
         storage_dtype=torch.bfloat16 if config["training"].get("teacher_cache_dtype") == "bfloat16" else torch.float16,
     )

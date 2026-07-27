@@ -28,14 +28,14 @@ or as an ordered SLURM dependency chain:
 python scripts/run_all.py \
   --config configs/pipeline.yaml \
   --mode slurm \
-  --gpus 2
+  --gpus 1
 ```
 
 Inspect either execution plan without running commands or calling `sbatch`:
 
 ```bash
 python scripts/run_all.py --config configs/pipeline.yaml --mode local --gpus 1 --dry-run
-python scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus 2 --dry-run
+python scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus 1 --dry-run
 ```
 
 The workflow performs prompt preparation, all three prototype-alignment/joint
@@ -70,7 +70,7 @@ expected organiser layout is:
 ```text
 data/
 ├── label_train.json
-├── descriptions_all.json
+├── descriptions.json
 ├── all_classes.pkl
 ├── manual/canonical_prompt_overrides.json
 ├── splits/train.pkl
@@ -93,11 +93,17 @@ python -m fish_vlm.cli build-teacher-cache --config configs/base.yaml
 python -m fish_vlm.cli make-pseudo-unseen --config configs/base.yaml
 ```
 
-The cache builder downloads BioCLIP only when the real preparation command is
-run. Unit tests substitute tiny deterministic encoders and perform no network
-access. The teacher cache reads only filenames from `train.pkl`, requires labels
-for every included image, uses the deterministic BioCLIP evaluation transform,
-and stores float16 embeddings converted to float32 for losses.
+The preparation job creates four persistent artifact caches: seen, unseen and
+all-class text prototypes plus the training-image teacher embeddings. Every
+builder checks and validates its destination first. A valid cache is reused
+without loading BioCLIP; an incompatible cache fails clearly instead of being
+silently overwritten. Model downloads are also kept below `cache/` through
+`HF_HOME` and `TORCH_HOME` in SLURM jobs.
+
+The teacher cache reads only filenames from `train.pkl`, requires labels for
+every included image, uses the deterministic BioCLIP evaluation transform, and
+stores float16 embeddings converted to float32 for losses. Unit tests substitute
+tiny deterministic encoders and perform no network access.
 
 The default training configuration selects by
 `estimated_overall_accuracy`. It therefore resolves the seed-42 split written
@@ -113,7 +119,7 @@ by `make-pseudo-unseen` and fails clearly if that command was skipped.
   dimension into the dynamically inferred BioCLIP dimension and unit-normalises
   in float32.
 - **BioCLIP-native:** `open_clip.create_model_and_transforms(
-  "hf-hub:imageomics/bioclip")` supplies both the frozen encoder and its own
+  "hf-hub:imageomics/bioclip-2")` supplies both the frozen encoder and its own
   image transform. Its image embeddings are unit-normalised before prototype
   similarity. Adapter mode adds a zero-initialised residual MLP while the
   encoder stays frozen.
@@ -134,16 +140,16 @@ python -m fish_vlm.cli evaluate --config configs/base.yaml
 Stages 1–4:
 
 ```bash
-torchrun --standalone --nproc_per_node=2 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
   --config configs/train/projection_only.yaml
 
-torchrun --standalone --nproc_per_node=2 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
   --config configs/train/final_block.yaml
 
-torchrun --standalone --nproc_per_node=2 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
   --config configs/train/joint_supervised_text.yaml
 
-torchrun --standalone --nproc_per_node=2 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
   --config configs/train/bioclip_adapter.yaml
 ```
 
@@ -167,6 +173,13 @@ Defaults are `1.0 * DINO text CE + 0.25 * cosine teacher`; joint training adds
 `0.5 * supervised CE`. Similarities, normalisation, softmax/KL and
 log-sum-exp-sensitive work are float32 even under AMP. BioCLIP parameters have
 `requires_grad=False` and cannot enter AdamW groups.
+
+The default 40 GB GPU profile uses BF16, a per-GPU training microbatch of 128,
+four-way gradient accumulation (effective batch 512 per GPU), and an evaluation
+batch of 256. DDP skips gradient synchronisation on accumulation-only
+microbatches. Cached-teacher stages also skip the unused BioCLIP image forward
+during training. Reduce `training.batch_size` if a specific card still runs out
+of memory; accumulation preserves the effective batch.
 
 ## Pseudo-unseen validation
 
@@ -230,16 +243,22 @@ Distributed samplers call `set_epoch`, exact nonlinear metrics gather prediction
 across ranks, and only rank zero writes checkpoints/metrics or starts W&B.
 
 ```bash
-python -m fish_vlm.cli slurm --config configs/slurm/ghpc.yaml --dry-run
-python -m fish_vlm.cli slurm --config configs/slurm/ghpc.yaml
+python -m fish_vlm.cli slurm --config configs/slurm/genome.yaml --dry-run
+python -m fish_vlm.cli slurm --config configs/slurm/genome.yaml
 python -m fish_vlm.cli sweep \
   --config configs/sweeps/multimodal_pipeline.yaml --dry-run
 pytest
 ```
 
-SLURM dry-run only renders text and never invokes `sbatch`. The sweep is phased
+SLURM dry-run only renders text and never invokes `sbatch`. Preparation uses the
+shared `cache/` directory so newly built artifacts persist. Each later job
+copies only that cache directory—not the repository or image dataset—to
+`${SLURM_TMPDIR}/fish-vlm-cache`, then points fish-vlm, Hugging Face and Torch
+caches at the node-local copy.
+
+The sweep is phased
 across baseline, projector, objective, learning rate, teacher weight, DINO
-adaptation, supervised head, BioCLIP adapter, inference branch, calibration and
+adaptation, superviysed head, BioCLIP adapter, inference branch, calibration and
 pseudo-unseen seed. It does not expose official labels.
 
 ## W&B result layout
@@ -268,4 +287,5 @@ from W&B config. Checkpoints and model artifacts are never uploaded.
   `blocks`, `stages`, or `layers`, plus `norm` or `fc_norm` when present.
 - The initial implementation deliberately does not fine-tune BioCLIP itself,
   sample random prompt bags, or use official image-only labels.
-- Multi-node DDP is outside scope; the launcher targets one node and two GPUs.
+- Multi-node DDP is outside scope; the launcher targets one node and a
+  configurable GPU count.

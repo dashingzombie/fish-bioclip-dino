@@ -12,7 +12,9 @@ def test_deep_merge_and_base_config_load() -> None:
     assert merged == {"a": {"b": 3, "c": 2}}
     config = load_config(Path("configs/train/projection_only.yaml"))
     assert config["training"]["stage"] == "projection_only"
-    assert config["model"]["bioclip"]["checkpoint"] == "hf-hub:imageomics/bioclip"
+    assert config["model"]["bioclip"]["checkpoint"] == "hf-hub:imageomics/bioclip-2"
+    assert config["training"]["batch_size"] == 128
+    assert config["training"]["gradient_accumulation_steps"] == 4
 
 
 def test_invalid_unseen_supervised_mode(tmp_path: Path) -> None:
@@ -27,4 +29,3 @@ def test_invalid_unseen_supervised_mode(tmp_path: Path) -> None:
     )
     with pytest.raises(ConfigError, match="cannot be used"):
         load_config(path)
-

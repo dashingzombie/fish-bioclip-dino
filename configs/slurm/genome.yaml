@@ -11,4 +11,5 @@ slurm:
   work_dir: .
   log_dir: outputs/slurm
   script_dir: outputs/slurm
-
+  stage_cache_on_node: true
+  node_cache_dir: fish-vlm-cache
