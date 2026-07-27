@@ -19,6 +19,8 @@ def _cache_setup_lines(
 ) -> list[str]:
     """Point all artifact/model caches at shared or node-local storage."""
     cache_dir = shlex.quote(str(config.get("cache_dir", "cache")))
+    #transfer local images to shared cache dir if node-local caching is enabled
+    
     lines = [
         "",
         f"SHARED_CACHE_DIR={cache_dir}",
@@ -27,17 +29,18 @@ def _cache_setup_lines(
         "fi",
     ]
     if node_local:
+        tmpdir = ''
         node_cache_name = shlex.quote(
             str(config["slurm"].get("node_cache_dir", "fish-vlm-cache"))
         )
         lines.extend(
             [
-                ': "${SLURM_TMPDIR:?SLURM_TMPDIR must be set for node-local cache staging}"',
+                ': "${TMPDIR:?TMPDIR must be set for node-local cache staging}"',
                 'if [[ ! -d "${SHARED_CACHE_DIR}" ]]; then',
                 '    echo "Shared cache directory does not exist: ${SHARED_CACHE_DIR}" >&2',
                 "    exit 1",
                 "fi",
-                f"FISH_VLM_CACHE_DIR=\"${{SLURM_TMPDIR}}\"/{node_cache_name}",
+                f"FISH_VLM_CACHE_DIR=\"${{TMPDIR}}\"/{node_cache_name}",
                 'mkdir -p "${FISH_VLM_CACHE_DIR}"',
                 'cp -a "${SHARED_CACHE_DIR}/." "${FISH_VLM_CACHE_DIR}/"',
             ]

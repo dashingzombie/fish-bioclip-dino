@@ -5,8 +5,8 @@ workflow:
   local_gpus: 1
   preparation_gpus: 1
   final_gpus: 1
-  cpus: 16
-  memory: 64G
+  cpus: 128
+  memory: 700G
   time_limit: "4:00:00"
 
   training_stages:

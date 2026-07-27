@@ -228,6 +228,7 @@ def make_loader(
         persistent_workers=bool(config["training"].get("persistent_workers", True)) and workers > 0,
         pin_memory=context.device.type == "cuda",
         collate_fn=collate_multiview,
+        prefetch_factor=4 if workers > 0 else 0,
         drop_last=training and len(dataset) >= int(config["training"]["batch_size"]),
     )
     return loader, sampler
