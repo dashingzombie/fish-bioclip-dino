@@ -1,0 +1,13 @@
+{
+  "jobs": {
+    "finalisation": "50399016",
+    "preparation": "50399011",
+    "training_bioclip_adapter": "50399015",
+    "training_final_block": "50399013",
+    "training_joint_supervised_text": "50399014",
+    "training_projection_only": "50399012"
+  },
+  "mode": "slurm",
+  "status": "submitted",
+  "workflow_hash": "9417b2398547e69a60706001628eb0aa119a10f86dbfe7b5fdc6c1e2f2a65bb4"
+}

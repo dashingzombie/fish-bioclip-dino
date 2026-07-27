@@ -14,7 +14,10 @@ cache/**/*.pt
 outputs/checkpoints/*
 outputs/metrics/*
 outputs/predictions/*
+
 outputs/submissions/*
 outputs/sweep_pipelines/*
 !outputs/**/.gitkeep
+*.out
+*.err
 
