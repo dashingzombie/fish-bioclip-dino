@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-#SBATCH --account=worm-species
 #SBATCH --job-name=fish-preparation
 #SBATCH --nodes=1
-#SBATCH --partition=gpu-l40s,gpu-h200
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=128
+#SBATCH --mem=700G
 #SBATCH --time=4:00:00
+#SBATCH --account=worm-species
+#SBATCH --partition=gpu-l40s,gpu-h200
 #SBATCH --output=outputs/slurm/%x-%j.out
 #SBATCH --error=outputs/slurm/%x-%j.err
+
 set -euo pipefail
 cd .
 source .venv/bin/activate

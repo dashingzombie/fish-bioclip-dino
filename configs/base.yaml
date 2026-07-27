@@ -53,14 +53,14 @@ model:
 training:
   stage: projection_only
   epochs: 30
-  batch_size: 128
-  eval_batch_size: 256
+  batch_size: 512
+  eval_batch_size: 1024
   gradient_accumulation_steps: 4
   lr: 0.0003
   weight_decay: 0.01
   use_amp: true
   amp_dtype: bfloat16
-  num_workers: 16
+  num_workers: 30
   persistent_workers: true
   conservative_augmentation: true
   teacher_cache_dtype: float16
@@ -131,9 +131,9 @@ wandb:
 
 slurm:
   job_name: fish-dino-bioclip
-  gpus: 1
-  cpus: 16
-  memory: 64G
+  gpus: 4
+  cpus: 128
+  memory: 700G
   time_limit: "4:00:00"
   partition: gpu-l40s,gpu-h200
   account: worm-species

@@ -1,7 +1,7 @@
 PYTHON ?= python
 CONFIG ?= configs/base.yaml
 CHECKPOINT ?= outputs/checkpoints/best.pt
-GPUS ?= 1
+GPUS ?= 4
 
 .PHONY: install test prepare-prompts build-text-prototypes build-teacher-cache \
 	pseudo-unseen train evaluate-zero-shot evaluate calibrate infer-test infer-unseen \
