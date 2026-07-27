@@ -31,9 +31,9 @@ def interpretable_metric_name(key: str) -> str:
     return f"validation/other/{key}"
 
 
-def compact_epoch_payload(
+def compact_step_payload(
     *,
-    epoch: int,
+    step: int,
     training_losses: dict[str, float],
     metrics: dict[str, float],
     learning_rates: dict[str, float],
@@ -41,9 +41,9 @@ def compact_epoch_payload(
     gpu_peak_memory_bytes: int | None,
     detailed: bool,
 ) -> dict[str, float | int]:
-    """Create one concise scalar payload for a W&B epoch."""
+    """Create one concise scalar payload for a validation step."""
     payload: dict[str, float | int] = {
-        "epoch": epoch,
+        "step": step,
         "system/throughput_images_per_second": throughput,
     }
     for name, value in training_losses.items():
@@ -69,7 +69,8 @@ def scientific_run_config(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "seed": config["seed"],
         "stage": training["stage"],
-        "epochs": training["epochs"],
+        "max_steps": training["max_steps"],
+        "validation_interval_steps": training["validation_interval_steps"],
         "batch_size": training["batch_size"],
         "optimizer": "AdamW",
         "learning_rate": training["lr"],
@@ -88,7 +89,7 @@ def scientific_run_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 class ScientificWandbLogger:
-    """Log compact epoch scalars and a single best-result summary."""
+    """Log compact step scalars and a single best-result summary."""
 
     def __init__(
         self,
@@ -103,7 +104,9 @@ class ScientificWandbLogger:
         wandb_config = config["wandb"]
         stage = str(config["training"]["stage"])
         default_name = f"{stage}-seed-{int(config['seed'])}"
-        self._detailed_every = max(1, int(wandb_config.get("log_detailed_every", 5)))
+        self._detailed_every_steps = max(
+            1, int(wandb_config.get("log_detailed_every_steps", 500))
+        )
         self.run = wandb_module.init(
             project=wandb_config["project"],
             name=wandb_config.get("name") or default_name,
@@ -113,8 +116,8 @@ class ScientificWandbLogger:
             mode=wandb_config.get("mode", "online"),
             config=scientific_run_config(config),
         )
-        self.run.define_metric("epoch")
-        self.run.define_metric("*", step_metric="epoch")
+        self.run.define_metric("step")
+        self.run.define_metric("*", step_metric="step")
         self.run.summary["model/trainable_parameters"] = int(trainable_parameters)
         self.run.summary["model/dino_name"] = config["model"]["dino"]["name"]
         self.run.summary["model/bioclip_checkpoint"] = config["model"]["bioclip"]["checkpoint"]
@@ -125,10 +128,10 @@ class ScientificWandbLogger:
             + config["training"].get("checkpoint_name", "best.pt")
         )
 
-    def log_epoch(
+    def log_step(
         self,
         *,
-        epoch: int,
+        step: int,
         training_losses: dict[str, float],
         metrics: dict[str, float],
         learning_rates: dict[str, float],
@@ -137,10 +140,14 @@ class ScientificWandbLogger:
         improved: bool,
     ) -> None:
         """Log always-on decisions and periodic/new-best branch details."""
-        detailed = improved or epoch == 0 or (epoch + 1) % self._detailed_every == 0
+        detailed = (
+            improved
+            or step == 0
+            or step % self._detailed_every_steps == 0
+        )
         self.run.log(
-            compact_epoch_payload(
-                epoch=epoch,
+            compact_step_payload(
+                step=step,
                 training_losses=training_losses,
                 metrics=metrics,
                 learning_rates=learning_rates,
@@ -150,9 +157,9 @@ class ScientificWandbLogger:
             )
         )
 
-    def record_best(self, *, epoch: int, metrics: dict[str, float]) -> None:
+    def record_best(self, *, step: int, metrics: dict[str, float]) -> None:
         """Replace summary values with the latest best validation result."""
-        self.run.summary["best/epoch"] = int(epoch)
+        self.run.summary["best/step"] = int(step)
         for key, value in metrics.items():
             self.run.summary[f"best/{interpretable_metric_name(key)}"] = float(value)
 

@@ -12,26 +12,31 @@ def test_local_workflow_contains_complete_ordered_pipeline() -> None:
     config = load_config("configs/pipeline.yaml")
     steps = build_workflow_steps(config, python_executable="python-test")
     names = [step.name for step in steps]
-    assert names[:4] == [
+    assert names[:5] == [
         "prepare_prompts",
         "build_text_prototypes",
         "make_pseudo_unseen",
+        "build_image_cache",
         "build_teacher_cache",
     ]
-    assert names[4:8] == [
+    for stage in (
         "projection_only",
         "final_block",
         "joint_supervised_text",
         "bioclip_adapter",
-    ]
-    assert names[-3:] == [
+    ):
+        assert stage in names
+        assert f"{stage}_package_submission" in names
+        assert names.index(stage) < names.index(f"{stage}_package_submission")
+    assert names[-4:] == [
         "merge_submission",
         "validate_submission",
+        "package_submission",
         "write_summary",
     ]
     result = run_all(config, mode="local", dry_run=True)
     assert result["dry_run"] is True
-    assert len(result["steps"]) == 15
+    assert len(result["steps"]) == 41
     multi_gpu = run_all(config, mode="local", dry_run=True, gpus=2)
     projection = next(
         step for step in multi_gpu["steps"] if step["name"] == "projection_only"
@@ -57,9 +62,12 @@ def test_slurm_dry_run_never_calls_sbatch(monkeypatch) -> None:
     preparation = result["jobs"][0]["script"]
     training = result["jobs"][1]["script"]
     assert 'FISH_VLM_CACHE_DIR="${SHARED_CACHE_DIR}"' in preparation
-    assert 'cp -a "${SHARED_CACHE_DIR}/." "${FISH_VLM_CACHE_DIR}/"' not in preparation
-    assert 'FISH_VLM_CACHE_DIR="${SLURM_TMPDIR}"/fish-vlm-cache' in training
-    assert 'cp -a "${SHARED_CACHE_DIR}/." "${FISH_VLM_CACHE_DIR}/"' in training
+    assert 'tar --directory="${SHARED_IMAGES_DIR}"' in preparation
+    assert 'export FISH_VLM_IMAGES_DIR' in preparation
+    assert 'FISH_VLM_CACHE_DIR="${NODE_TMPDIR}"/fish-vlm-cache' in training
+    assert "CACHE_COPY_PIDS=()" in training
+    assert 'cp --archive --reflink=auto "${source_path}"' in training
+    assert "image_transforms/test/dino.npy" in training
     assert 'export HF_HOME="${FISH_VLM_CACHE_DIR}/huggingface"' in training
     assert 'export TORCH_HOME="${FISH_VLM_CACHE_DIR}/torch"' in training
 

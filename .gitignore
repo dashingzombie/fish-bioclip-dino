@@ -20,4 +20,5 @@ outputs/sweep_pipelines/*
 !outputs/**/.gitkeep
 *.out
 *.err
-
+outputs/slurm/**/*.sh
+outputs/pipeline/workflow_state.json

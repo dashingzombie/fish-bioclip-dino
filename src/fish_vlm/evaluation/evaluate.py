@@ -11,7 +11,7 @@ from fish_vlm.config import data_path
 from fish_vlm.data.catalog import load_labels, split_filenames
 from fish_vlm.data.datasets import BioClipImageDataset
 from fish_vlm.data.catalog import official_split_counts
-from fish_vlm.models.bioclip import encode_bioclip_images, load_bioclip
+from fish_vlm.models.bioclip import encode_bioclip_images
 from fish_vlm.models.multimodal import text_logits
 from fish_vlm.prototypes.text import load_text_prototype_cache
 from fish_vlm.evaluation.reports import add_selection_metrics
@@ -25,6 +25,7 @@ from fish_vlm.training.train import (
     ensure_partitions,
     evaluate_loader,
     load_candidate_prototypes,
+    load_runtime_image_cache,
     make_loader,
 )
 from fish_vlm.utils.hashing import prompts_hash
@@ -59,7 +60,7 @@ def evaluate_checkpoint(config: dict[str, Any], checkpoint_path: str | Path) -> 
         filenames, config, bundle, labels, species_names, training=False, context=context
     )
     metrics = evaluate_loader(bundle.model, loader, prototypes, device)
-    metrics["checkpoint_epoch"] = float(checkpoint["epoch"])
+    metrics["checkpoint_step"] = float(checkpoint["step"])
     return metrics
 
 
@@ -69,10 +70,14 @@ def evaluate_bioclip_zero_shot(config: dict[str, Any]) -> dict[str, float]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if not config["model"]["bioclip_image_path"].get("enabled", False):
         raise ValueError("Stage 0 requires model.bioclip_image_path.enabled=true")
-    partitions = ensure_partitions(config)
+    bundle = build_runtime(config, device=device)
+    partitions = bundle.partitions
     checkpoint_name = config["model"]["bioclip"]["checkpoint"]
-    bioclip, _, transform, _, embedding_dim = load_bioclip(checkpoint_name)
-    bioclip = bioclip.to(device)
+    bioclip = bundle.model.bioclip
+    if bioclip is None:
+        raise ValueError("Stage 0 requires a loaded BioCLIP image encoder")
+    transform = bundle.bioclip_eval_transform
+    embedding_dim = bundle.embedding_dim
     prompts = read_json(_data_processed_path(config, "canonical_prompts.json"))
     cache = load_text_prototype_cache(
         _cache_path(config, "text", "text_prototypes_seen.pt"),
@@ -101,6 +106,12 @@ def evaluate_bioclip_zero_shot(config: dict[str, Any]) -> dict[str, float]:
             transform,
             labels,
             {name: index for index, name in enumerate(species_names)},
+            image_cache=load_runtime_image_cache(
+                config,
+                bundle,
+                filenames,
+                training=False,
+            ),
         )
         loader = DataLoader(
             dataset,

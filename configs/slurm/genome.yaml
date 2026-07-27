@@ -1,11 +1,11 @@
 defaults: [../train/projection_only.yaml]
 slurm:
   job_name: fish-dino-bioclip
-  gpus: 1
-  cpus: 16
-  memory: 64G
+  gpus: 4
+  cpus: 128
+  memory: 700G
   time_limit: "4:00:00"
-  partition: gpu-l40s,gpu-h200
+  partition: gpu-h200
   account: worm-species
   environment_activate: source .venv/bin/activate
   work_dir: .

@@ -3,7 +3,7 @@ training:
   stage: bioclip_adapter
   checkpoint_name: best-adapter.pt
   metrics_name: adapter.json
-  epochs: 15
+  max_steps: 600
   lr: 0.0001
   weight_decay: 0.01
 model:

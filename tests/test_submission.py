@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import pickle
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from fish_vlm.inference.submission import merge_predictions
+from fish_vlm.inference.submission import merge_predictions, package_submission
 from fish_vlm.inference.validation import validate_submission
 
 
@@ -51,3 +52,15 @@ def test_merge_rejects_cross_split_collision(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="Duplicate filenames"):
         merge_predictions(first, second, tmp_path / "out.json")
 
+
+def test_submission_zip_is_deterministic_and_has_one_root_file(
+    tmp_path: Path,
+) -> None:
+    submission = tmp_path / "prediction.json"
+    submission.write_text('{"fish.jpg":"A fish"}\n', encoding="utf-8")
+    first = package_submission(submission, tmp_path / "first.zip")
+    second = package_submission(submission, tmp_path / "second.zip")
+    assert first.read_bytes() == second.read_bytes()
+    with zipfile.ZipFile(first) as archive:
+        assert archive.namelist() == ["prediction.json"]
+        assert archive.read("prediction.json") == submission.read_bytes()

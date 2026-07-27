@@ -3,7 +3,7 @@ CONFIG ?= configs/base.yaml
 CHECKPOINT ?= outputs/checkpoints/best.pt
 GPUS ?= 4
 
-.PHONY: install test prepare-prompts build-text-prototypes build-teacher-cache \
+.PHONY: install test prepare-prompts build-text-prototypes build-image-cache build-teacher-cache \
 	pseudo-unseen train evaluate-zero-shot evaluate calibrate infer-test infer-unseen \
 	submission validate-submission slurm-dry-run slurm-submit sweep-dry-run \
 	run-all-local run-all-local-dry-run run-all-slurm run-all-slurm-dry-run
@@ -19,6 +19,9 @@ prepare-prompts:
 
 build-text-prototypes:
 	$(PYTHON) -m fish_vlm.cli build-text-prototypes --config $(CONFIG)
+
+build-image-cache:
+	$(PYTHON) -m fish_vlm.cli build-image-cache --config $(CONFIG)
 
 build-teacher-cache:
 	$(PYTHON) -m fish_vlm.cli build-teacher-cache --config $(CONFIG)
@@ -51,6 +54,9 @@ submission:
 		--test outputs/predictions/test.json \
 		--unseen outputs/predictions/unseen.json \
 		--output outputs/submissions/prediction.json
+	$(PYTHON) -m fish_vlm.cli package-submission \
+		--submission outputs/submissions/prediction.json \
+		--output outputs/submissions/submission.zip
 
 validate-submission:
 	$(PYTHON) -m fish_vlm.cli validate-submission \

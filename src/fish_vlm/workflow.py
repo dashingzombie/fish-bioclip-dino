@@ -74,6 +74,12 @@ def build_workflow_steps(
             prepare_gpus,
         ),
         WorkflowStep(
+            "build_image_cache",
+            cli("build-image-cache", "--config", base_config),
+            "preparation",
+            prepare_gpus,
+        ),
+        WorkflowStep(
             "build_teacher_cache",
             cli("build-teacher-cache", "--config", base_config),
             "preparation",
@@ -102,6 +108,113 @@ def build_workflow_steps(
                 f"training_{stage['name']}",
                 training_gpus,
             )
+        )
+        stage_name = str(stage["name"])
+        stage_checkpoint = _resolved(root, stage["checkpoint"])
+        stage_seen_config = _resolved(root, stage["seen_inference_config"])
+        stage_unseen_config = _resolved(
+            root,
+            stage.get(
+                "unseen_inference_config",
+                workflow["unseen_inference_config"],
+            ),
+        )
+        stage_output_dir = Path(
+            _resolved(root, workflow["stage_submission_dir"])
+        ) / stage_name
+        stage_calibration = str(stage_output_dir / "calibration.json")
+        stage_test = str(stage_output_dir / "test.json")
+        stage_unseen = str(stage_output_dir / "unseen.json")
+        stage_submission = str(stage_output_dir / "prediction.json")
+        stage_zip = str(stage_output_dir / "submission.zip")
+        stage_group = f"training_{stage_name}"
+        steps.extend(
+            [
+                WorkflowStep(
+                    f"{stage_name}_calibrate",
+                    cli(
+                        "calibrate",
+                        "--config",
+                        stage_seen_config,
+                        "--checkpoint",
+                        stage_checkpoint,
+                        "--output",
+                        stage_calibration,
+                    ),
+                    stage_group,
+                    training_gpus,
+                ),
+                WorkflowStep(
+                    f"{stage_name}_infer_test",
+                    cli(
+                        "infer",
+                        "--config",
+                        stage_seen_config,
+                        "--checkpoint",
+                        stage_checkpoint,
+                        "--calibration",
+                        stage_calibration,
+                        "--output",
+                        stage_test,
+                    ),
+                    stage_group,
+                    training_gpus,
+                ),
+                WorkflowStep(
+                    f"{stage_name}_infer_unseen",
+                    cli(
+                        "infer",
+                        "--config",
+                        stage_unseen_config,
+                        "--checkpoint",
+                        stage_checkpoint,
+                        "--calibration",
+                        stage_calibration,
+                        "--output",
+                        stage_unseen,
+                    ),
+                    stage_group,
+                    training_gpus,
+                ),
+                WorkflowStep(
+                    f"{stage_name}_merge_submission",
+                    cli(
+                        "merge-submission",
+                        "--test",
+                        stage_test,
+                        "--unseen",
+                        stage_unseen,
+                        "--output",
+                        stage_submission,
+                    ),
+                    stage_group,
+                    training_gpus,
+                ),
+                WorkflowStep(
+                    f"{stage_name}_validate_submission",
+                    cli(
+                        "validate-submission",
+                        "--submission",
+                        stage_submission,
+                        "--config",
+                        base_config,
+                    ),
+                    stage_group,
+                    training_gpus,
+                ),
+                WorkflowStep(
+                    f"{stage_name}_package_submission",
+                    cli(
+                        "package-submission",
+                        "--submission",
+                        stage_submission,
+                        "--output",
+                        stage_zip,
+                    ),
+                    stage_group,
+                    training_gpus,
+                ),
+            ]
         )
     checkpoint = _resolved(root, workflow["final_checkpoint"])
     seen_config = _resolved(root, workflow["seen_inference_config"])
@@ -200,6 +313,18 @@ def build_workflow_steps(
                 final_gpus,
             ),
             WorkflowStep(
+                "package_submission",
+                cli(
+                    "package-submission",
+                    "--submission",
+                    submission,
+                    "--output",
+                    str(Path(submission).with_name("submission.zip")),
+                ),
+                "finalisation",
+                final_gpus,
+            ),
+            WorkflowStep(
                 "write_summary",
                 cli("pipeline-summary", "--config", base_config),
                 "finalisation",
@@ -288,7 +413,14 @@ def run_slurm_workflow(
                 job_name=f"fish-{name.replace('_', '-')}",
                 commands=commands,
                 gpus=gpus,
-                node_local_cache=name != "preparation",
+                cache_scope=(
+                    "shared"
+                    if name == "preparation"
+                    else "finalisation"
+                    if name == "finalisation"
+                    else "training"
+                ),
+                stage_images=name == "preparation",
             ),
         }
         for index, (name, gpus, commands) in enumerate(groups)
@@ -366,13 +498,23 @@ def write_pipeline_summary(config: dict[str, Any]) -> dict[str, Any]:
     for stage in workflow["training_stages"]:
         metrics_path = Path(_resolved(root, stage["metrics"]))
         checkpoint_path = Path(_resolved(root, stage["checkpoint"]))
+        stage_submission_zip = (
+            Path(_resolved(root, workflow["stage_submission_dir"]))
+            / str(stage["name"])
+            / "submission.zip"
+        )
         if not metrics_path.exists():
             raise FileNotFoundError(f"Stage metrics are missing: {metrics_path}")
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Stage checkpoint is missing: {checkpoint_path}")
+        if not stage_submission_zip.exists():
+            raise FileNotFoundError(
+                f"Stage submission ZIP is missing: {stage_submission_zip}"
+            )
         stages[str(stage["name"])] = {
             "metrics_path": str(metrics_path),
             "checkpoint": str(checkpoint_path),
+            "submission_zip": str(stage_submission_zip),
             "results": read_json(metrics_path),
         }
     final_metrics_path = Path(_resolved(root, workflow["final_metrics"]))

@@ -5,7 +5,7 @@ from typing import Any
 from fish_vlm.config import load_config
 from fish_vlm.training.wandb_logging import (
     ScientificWandbLogger,
-    compact_epoch_payload,
+    compact_step_payload,
     interpretable_metric_name,
 )
 
@@ -42,8 +42,8 @@ def test_metric_names_are_direct_and_interpretable() -> None:
         interpretable_metric_name("pseudo_unseen_fused_text_balanced_accuracy")
         == "validation/pseudo_unseen/fused_text/balanced_accuracy"
     )
-    compact = compact_epoch_payload(
-        epoch=2,
+    compact = compact_step_payload(
+        step=200,
         training_losses={"loss": 1.2, "dino_text_classification": 0.8},
         metrics={
             "estimated_overall_accuracy": 0.7,
@@ -71,8 +71,8 @@ def test_wandb_logger_uses_small_periodic_payload_and_best_summary() -> None:
         "pseudo_unseen_accuracy": 0.6,
         "dino_text_accuracy": 0.75,
     }
-    logger.log_epoch(
-        epoch=1,
+    logger.log_step(
+        step=100,
         training_losses={"loss": 1.0},
         metrics=metrics,
         learning_rates={"projector": 1e-4},
@@ -82,8 +82,8 @@ def test_wandb_logger_uses_small_periodic_payload_and_best_summary() -> None:
     )
     assert "score/estimated_overall_accuracy" in fake.run.logged[-1]
     assert "validation/seen/dino_text/accuracy" not in fake.run.logged[-1]
-    logger.log_epoch(
-        epoch=2,
+    logger.log_step(
+        step=200,
         training_losses={"loss": 0.9},
         metrics=metrics,
         learning_rates={"projector": 1e-4},
@@ -92,10 +92,9 @@ def test_wandb_logger_uses_small_periodic_payload_and_best_summary() -> None:
         improved=True,
     )
     assert fake.run.logged[-1]["validation/seen/dino_text/accuracy"] == 0.75
-    logger.record_best(epoch=2, metrics=metrics)
-    assert fake.run.summary["best/epoch"] == 2
+    logger.record_best(step=200, metrics=metrics)
+    assert fake.run.summary["best/step"] == 200
     assert fake.run.summary["best/score/estimated_overall_accuracy"] == 0.7
     assert "resolved_configuration" not in fake.init_kwargs["config"]
     logger.finish()
     assert fake.run.finished
-

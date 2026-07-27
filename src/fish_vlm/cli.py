@@ -13,6 +13,11 @@ from fish_vlm.config import data_path, load_config
 from fish_vlm.data.catalog import load_labels, split_filenames
 from fish_vlm.data.collate import collate_multiview
 from fish_vlm.data.datasets import FishMultiViewDataset
+from fish_vlm.data.image_cache import (
+    build_deterministic_image_cache,
+    load_deterministic_image_cache,
+    validate_image_filenames,
+)
 from fish_vlm.data.descriptions import prepare_canonical_prompts
 from fish_vlm.data.partitions import create_and_save_partitions
 from fish_vlm.data.pseudo_unseen import save_pseudo_unseen_splits
@@ -20,7 +25,7 @@ from fish_vlm.data.transforms import transform_fingerprint
 from fish_vlm.evaluation.calibrate import calibrate_checkpoint
 from fish_vlm.evaluation.evaluate import evaluate_bioclip_zero_shot, evaluate_checkpoint
 from fish_vlm.inference.predict import predict_split
-from fish_vlm.inference.submission import merge_predictions
+from fish_vlm.inference.submission import merge_predictions, package_submission
 from fish_vlm.inference.validation import validate_submission
 from fish_vlm.models.bioclip import load_bioclip
 from fish_vlm.prototypes.image_teacher import (
@@ -39,6 +44,7 @@ from fish_vlm.training.train import (
     _data_processed_path,
     build_runtime,
     ensure_partitions,
+    load_runtime_image_cache,
     train_from_config,
 )
 from fish_vlm.utils.io import write_json
@@ -61,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     _config_parser(commands, "prepare-prompts")
     _config_parser(commands, "build-text-prototypes")
+    _config_parser(commands, "build-image-cache")
     _config_parser(commands, "build-teacher-cache")
     _config_parser(commands, "make-pseudo-unseen")
     _config_parser(commands, "train")
@@ -76,8 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--test", required=True)
     merge.add_argument("--unseen", required=True)
     merge.add_argument("--output", required=True)
+    package = commands.add_parser("package-submission")
+    package.add_argument("--submission", required=True)
+    package.add_argument("--output", required=True)
     validate = _config_parser(commands, "validate-submission")
     validate.add_argument("--submission", required=True)
+    image_list = _config_parser(commands, "list-images")
+    image_list.add_argument("--output", required=True)
+    image_list.add_argument("--missing-image-cache-only", action="store_true")
     sweep = _config_parser(commands, "sweep")
     sweep.add_argument("--dry-run", action="store_true")
     slurm = _config_parser(commands, "slurm")
@@ -193,6 +206,12 @@ def _build_teacher(config: dict[str, Any]) -> None:
         bundle.bioclip_eval_transform,
         labels,
         {name: index for index, name in enumerate(bundle.partitions.seen_species)},
+        image_cache=load_runtime_image_cache(
+            config,
+            bundle,
+            filenames,
+            training=False,
+        ),
     )
     from torch.utils.data import DataLoader
 
@@ -215,6 +234,109 @@ def _build_teacher(config: dict[str, Any]) -> None:
     )
 
 
+def _image_split_filenames(config: dict[str, Any]) -> dict[str, list[str]]:
+    return {
+        split: validate_image_filenames(
+            split_filenames(data_path(config, f"{split}_split"))
+        )
+        for split in ("train", "test", "unseen")
+    }
+
+
+def _write_image_list(
+    config: dict[str, Any],
+    output_path: str | Path,
+    *,
+    missing_image_cache_only: bool = False,
+) -> int:
+    """Write the exact required image union as a NUL-delimited tar file list."""
+    splits = _image_split_filenames(config)
+    if missing_image_cache_only:
+        cache_root = _cache_path(config, "image_transforms")
+        required_splits: dict[str, list[str]] = {}
+        for split, filenames in splits.items():
+            path = cache_root / split
+            if not path.exists():
+                required_splits[split] = filenames
+                continue
+            load_deterministic_image_cache(
+                path,
+                expected_filenames=filenames,
+                dino_model_name=str(config["model"]["dino"]["name"]),
+                bioclip_checkpoint=str(config["model"]["bioclip"]["checkpoint"]),
+            )
+        splits = required_splits
+    names = list(
+        dict.fromkeys(
+            name
+            for filenames in splits.values()
+            for name in filenames
+        )
+    )
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"".join(name.encode("utf-8") + b"\0" for name in names))
+    return len(names)
+
+
+def _build_image_caches(config: dict[str, Any]) -> None:
+    """Build missing deterministic split caches before training starts."""
+    splits = _image_split_filenames(config)
+    dino_name = str(config["model"]["dino"]["name"])
+    bioclip_checkpoint = str(config["model"]["bioclip"]["checkpoint"])
+    cache_root = _cache_path(config, "image_transforms")
+    missing: list[str] = []
+    for split, filenames in splits.items():
+        path = cache_root / split
+        if path.exists():
+            try:
+                load_deterministic_image_cache(
+                    path,
+                    expected_filenames=filenames,
+                    dino_model_name=dino_name,
+                    bioclip_checkpoint=bioclip_checkpoint,
+                )
+            except ValueError as error:
+                raise ValueError(
+                    f"Existing {split} image-transform cache is invalid: {error}"
+                ) from error
+        else:
+            missing.append(split)
+    if not missing:
+        return
+
+    bundle = build_runtime(config, device="cpu")
+    dino_hash = transform_fingerprint(bundle.dino_eval_transform)
+    bioclip_hash = transform_fingerprint(bundle.bioclip_eval_transform)
+    cache_config = config["data"].get("deterministic_transform_cache", {})
+    for split, filenames in splits.items():
+        path = cache_root / split
+        if path.exists():
+            load_deterministic_image_cache(
+                path,
+                expected_filenames=filenames,
+                dino_model_name=dino_name,
+                bioclip_checkpoint=bioclip_checkpoint,
+                dino_transform_hash=dino_hash,
+                bioclip_transform_hash=bioclip_hash,
+            )
+            continue
+        build_deterministic_image_cache(
+            path=path,
+            filenames=filenames,
+            images_dir=data_path(config, "images_dir"),
+            dino_transform=bundle.dino_eval_transform,
+            bioclip_transform=bundle.bioclip_eval_transform,
+            dino_model_name=dino_name,
+            bioclip_checkpoint=bioclip_checkpoint,
+            dino_transform_hash=dino_hash,
+            bioclip_transform_hash=bioclip_hash,
+            dtype=str(cache_config.get("dtype", "float16")),
+            batch_size=int(cache_config.get("batch_size", 128)),
+            num_workers=int(cache_config.get("num_workers", 16)),
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     """Dispatch one command and return a shell exit code."""
     args = build_parser().parse_args(argv)
@@ -223,11 +345,29 @@ def main(argv: list[str] | None = None) -> int:
         result = merge_predictions(args.test, args.unseen, args.output)
         print(json.dumps({"merged": len(result), "output": args.output}))
         return 0
+    if args.command == "package-submission":
+        output = package_submission(args.submission, args.output)
+        print(json.dumps({"output": str(output)}))
+        return 0
     config = load_config(args.config)
-    if args.command == "prepare-prompts":
+    if args.command == "list-images":
+        print(
+            json.dumps(
+                {
+                    "images": _write_image_list(
+                        config,
+                        args.output,
+                        missing_image_cache_only=args.missing_image_cache_only,
+                    )
+                }
+            )
+        )
+    elif args.command == "prepare-prompts":
         print(json.dumps({"prepared": len(_prepare(config))}))
     elif args.command == "build-text-prototypes":
         _build_text(config)
+    elif args.command == "build-image-cache":
+        _build_image_caches(config)
     elif args.command == "build-teacher-cache":
         _build_teacher(config)
     elif args.command == "make-pseudo-unseen":

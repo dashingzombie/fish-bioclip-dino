@@ -88,7 +88,7 @@ def calibrate_checkpoint(
         parameters,
         {
             "checkpoint": str(checkpoint_path),
-            "checkpoint_epoch": checkpoint["epoch"],
+            "checkpoint_step": checkpoint["step"],
             "species_names": species_names,
             "text_prototype_hash": cache["prompt_hash"],
         },

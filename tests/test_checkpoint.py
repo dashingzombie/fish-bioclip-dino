@@ -33,17 +33,16 @@ def test_checkpoint_round_trip_and_order_rejection(tmp_path: Path) -> None:
         "active_losses": ["dino_text_classification"],
     }
     save_checkpoint(
-        path, model=model, optimizer=None, scheduler=None, scaler=None, epoch=3,
+        path, model=model, optimizer=None, scheduler=None, scaler=None, step=300,
         best_metric=0.75, config={"seed": 1}, metadata=metadata,
     )
     loaded = load_checkpoint(
         path, _model(), expected_seen_species=["A", "B"], expected_unseen_species=["C"],
         expected_text_prototype_hash="prompts", expected_training_species_hash="training",
     )
-    assert loaded["epoch"] == 3
+    assert loaded["step"] == 300
     with pytest.raises(ValueError, match="Incompatible"):
         load_checkpoint(
             path, _model(), expected_seen_species=["B", "A"], expected_unseen_species=["C"],
             expected_text_prototype_hash="prompts",
         )
-

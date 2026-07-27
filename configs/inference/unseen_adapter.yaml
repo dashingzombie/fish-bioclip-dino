@@ -1,0 +1,17 @@
+defaults: [../base.yaml]
+evaluation:
+  split: train
+  candidate_set: unseen
+  official_split: unseen
+inference:
+  unseen:
+    candidate_set: unseen
+    mode: bioclip_native
+model:
+  bioclip_image_path:
+    enabled: true
+    mode: adapter
+    adapter:
+      enabled: true
+      hidden_dim: 512
+      dropout: 0.1

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from fish_vlm.config import ConfigError, deep_merge, load_config
+from fish_vlm.config import ConfigError, deep_merge, load_config, validate_config
 
 
 def test_deep_merge_and_base_config_load() -> None:
@@ -13,8 +13,21 @@ def test_deep_merge_and_base_config_load() -> None:
     config = load_config(Path("configs/train/projection_only.yaml"))
     assert config["training"]["stage"] == "projection_only"
     assert config["model"]["bioclip"]["checkpoint"] == "hf-hub:imageomics/bioclip-2"
-    assert config["training"]["batch_size"] == 128
-    assert config["training"]["gradient_accumulation_steps"] == 4
+    assert config["training"]["batch_size"] == 512
+    assert config["training"]["max_steps"] == 1200
+    assert config["training"]["gradient_accumulation_steps"] == 1
+    assert "epochs" not in config["training"]
+    assert config["slurm"]["gpus"] == 4
+    assert config["slurm"]["cpus"] == 128
+    assert config["slurm"]["memory"] == "700G"
+    assert config["slurm"]["partition"] == "gpu-h200"
+
+
+def test_epoch_configuration_is_rejected() -> None:
+    config = load_config("configs/base.yaml")
+    config["training"]["epochs"] = 2
+    with pytest.raises(ConfigError, match="no longer supported"):
+        validate_config(config)
 
 
 def test_invalid_unseen_supervised_mode(tmp_path: Path) -> None:

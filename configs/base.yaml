@@ -13,6 +13,11 @@ data:
   unseen_split: splits/unseen.pkl
   processed_dir: processed
   manual_overrides: manual/canonical_prompt_overrides.json
+  deterministic_transform_cache:
+    enabled: true
+    dtype: float16
+    batch_size: 256
+    num_workers: 32
 
 text:
   canonical_prompts_path: data/processed/canonical_prompts.json
@@ -52,24 +57,31 @@ model:
 
 training:
   stage: projection_only
-  epochs: 30
+  max_steps: 1200
+  validation_interval_steps: 100
   batch_size: 512
   eval_batch_size: 1024
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 1
   lr: 0.0003
   weight_decay: 0.01
   use_amp: true
   amp_dtype: bfloat16
-  num_workers: 30
+  num_workers: 24
+  eval_num_workers: 12
+  prefetch_factor: 2
   persistent_workers: true
   conservative_augmentation: true
   teacher_cache_dtype: float16
-  early_stopping_patience: 10
+  early_stopping_patience_evaluations: 5
   checkpoint_name: best.pt
   metrics_name: best.json
   distributed:
     enabled: true
     backend: nccl
+    strategy: ddp
+    static_graph: true
+    gradient_as_bucket_view: true
+    broadcast_buffers: false
 
 loss:
   dino_text_classification:
@@ -127,7 +139,7 @@ wandb:
   group: multimodal-pipeline
   name: null
   tags: [fish, dino, bioclip]
-  log_detailed_every: 5
+  log_detailed_every_steps: 500
 
 slurm:
   job_name: fish-dino-bioclip
@@ -135,7 +147,7 @@ slurm:
   cpus: 128
   memory: 700G
   time_limit: "4:00:00"
-  partition: gpu-l40s,gpu-h200
+  partition: gpu-h200
   account: worm-species
   environment_activate: source .venv/bin/activate
   work_dir: .

@@ -107,9 +107,28 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ConfigError(
             "training.gradient_accumulation_steps must be at least 1"
         )
+    if "epochs" in config["training"]:
+        raise ConfigError("training.epochs is no longer supported; use max_steps")
+    max_steps = int(config["training"].get("max_steps", 0))
+    validation_interval = int(
+        config["training"].get("validation_interval_steps", 0)
+    )
+    if max_steps < 1:
+        raise ConfigError("training.max_steps must be at least 1")
+    if validation_interval < 1 or validation_interval > max_steps:
+        raise ConfigError(
+            "training.validation_interval_steps must be between 1 and max_steps"
+        )
+    strategy = config["training"].get("distributed", {}).get("strategy", "ddp")
+    if strategy != "ddp":
+        raise ConfigError(
+            "training.distributed.strategy must be ddp for the frozen-encoder pipeline"
+        )
 
 
 def data_path(config: dict[str, Any], key: str) -> Path:
     """Resolve a data entry relative to ``data.root_dir``."""
+    if key == "images_dir" and os.environ.get("FISH_VLM_IMAGES_DIR"):
+        return Path(os.environ["FISH_VLM_IMAGES_DIR"]).expanduser()
     root = Path(config["data"]["root_dir"]).expanduser()
     return root / config["data"][key]

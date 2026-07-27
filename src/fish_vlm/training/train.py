@@ -19,6 +19,10 @@ from fish_vlm.config import data_path
 from fish_vlm.data.catalog import load_labels, split_filenames
 from fish_vlm.data.collate import collate_multiview
 from fish_vlm.data.datasets import FishMultiViewDataset
+from fish_vlm.data.image_cache import (
+    DeterministicImageCacheCollection,
+    load_image_cache_collection,
+)
 from fish_vlm.data.partitions import ClassPartitions, create_and_save_partitions, load_partitions
 from fish_vlm.data.transforms import build_dino_transform, transform_fingerprint
 from fish_vlm.losses.total import compute_total_loss
@@ -169,6 +173,29 @@ def load_candidate_prototypes(
     return cache["embeddings"].to(device), names, cache
 
 
+def load_runtime_image_cache(
+    config: dict[str, Any],
+    bundle: RuntimeBundle,
+    filenames: list[str],
+    *,
+    training: bool,
+) -> DeterministicImageCacheCollection | None:
+    """Load deterministic model inputs when enabled for this loader."""
+    cache_config = config["data"].get("deterministic_transform_cache", {})
+    if not cache_config.get("enabled", False):
+        return None
+    if training and not config["training"].get("conservative_augmentation", True):
+        return None
+    return load_image_cache_collection(
+        _cache_path(config, "image_transforms"),
+        required_filenames=filenames,
+        dino_model_name=str(config["model"]["dino"]["name"]),
+        bioclip_checkpoint=bundle.bioclip_checkpoint,
+        dino_transform_hash=transform_fingerprint(bundle.dino_eval_transform),
+        bioclip_transform_hash=transform_fingerprint(bundle.bioclip_eval_transform),
+    )
+
+
 def _split_labelled_filenames(
     filenames: list[str],
     labels: dict[str, str],
@@ -216,9 +243,21 @@ def make_loader(
         bundle.bioclip_eval_transform,
         labels=labels,
         species_to_index={name: index for index, name in enumerate(species_names)},
+        image_cache=load_runtime_image_cache(
+            config,
+            bundle,
+            filenames,
+            training=training,
+        ),
     )
     sampler = DistributedSampler(dataset, shuffle=training) if context.world_size > 1 else None
-    workers = int(config["training"].get("num_workers", 4))
+    worker_key = "num_workers" if training else "eval_num_workers"
+    workers = int(
+        config["training"].get(
+            worker_key,
+            config["training"].get("num_workers", 4),
+        )
+    )
     loader = DataLoader(
         dataset,
         batch_size=int(config["training"]["batch_size"] if training else config["training"]["eval_batch_size"]),
@@ -227,8 +266,12 @@ def make_loader(
         num_workers=workers,
         persistent_workers=bool(config["training"].get("persistent_workers", True)) and workers > 0,
         pin_memory=context.device.type == "cuda",
+        prefetch_factor=(
+            int(config["training"].get("prefetch_factor", 2))
+            if workers > 0
+            else None
+        ),
         collate_fn=collate_multiview,
-        prefetch_factor=4 if workers > 0 else 0,
         drop_last=training and len(dataset) >= int(config["training"]["batch_size"]),
     )
     return loader, sampler
@@ -308,6 +351,9 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
     seed_everything(int(config["seed"]) + context.rank)
     if context.device.type == "cuda":
         torch.set_float32_matmul_precision("high")
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
     bundle = build_runtime(config, device=context.device)
     configure_training_stage(bundle.model, config["training"]["stage"])
     labels = load_labels(config)
@@ -397,16 +443,29 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
             strict=False,
         )
     optimizer = build_optimizer(bundle.model, config["training"])
+    max_steps = int(config["training"]["max_steps"])
+    validation_interval = int(config["training"]["validation_interval_steps"])
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(1, int(config["training"]["epochs"]))
+        optimizer, T_max=max_steps
     )
     amp_dtype = torch.bfloat16 if config["training"].get("amp_dtype") == "bfloat16" else torch.float16
     use_amp = bool(config["training"].get("use_amp", True)) and context.device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp and amp_dtype == torch.float16)
     model: torch.nn.Module = bundle.model
     if context.world_size > 1:
-        model = DistributedDataParallel(bundle.model, device_ids=[context.local_rank])
-    early = EarlyStopping(int(config["training"].get("early_stopping_patience", 10)))
+        ddp_config = config["training"].get("distributed", {})
+        model = DistributedDataParallel(
+            bundle.model,
+            device_ids=[context.local_rank],
+            broadcast_buffers=bool(ddp_config.get("broadcast_buffers", False)),
+            gradient_as_bucket_view=bool(
+                ddp_config.get("gradient_as_bucket_view", True)
+            ),
+            static_graph=bool(ddp_config.get("static_graph", True)),
+        )
+    early = EarlyStopping(
+        int(config["training"].get("early_stopping_patience_evaluations", 10))
+    )
     selection_metric = config["validation"]["selection_metric"]
     output_dir = Path(config.get("output_dir", "outputs"))
     checkpoint_name = str(config["training"].get("checkpoint_name", "best.pt"))
@@ -423,28 +482,36 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
     accumulation_steps = int(config["training"].get("gradient_accumulation_steps", 1))
     if accumulation_steps < 1:
         raise ValueError("training.gradient_accumulation_steps must be at least 1")
+    global_step = 0
+    data_pass = 0
+    if train_sampler is not None:
+        train_sampler.set_epoch(data_pass)
+    train_iterator = iter(train_loader)
+    running: dict[str, float] = {}
+    samples = 0
+    interval_start = time.perf_counter()
+    optimizer.zero_grad(set_to_none=True)
+    if context.device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(context.device)
     try:
-        for epoch in range(int(config["training"]["epochs"])):
-            if train_sampler is not None:
-                train_sampler.set_epoch(epoch)
+        while global_step < max_steps:
             model.train()
             if bundle.model.bioclip is not None:
                 bundle.model.bioclip.eval()
             if config["model"]["dino"]["trainable_scope"] == "frozen":
                 bundle.model.dino.eval()
-            running: dict[str, float] = {}
-            samples = 0
-            start = time.perf_counter()
-            optimizer.zero_grad(set_to_none=True)
-            batches_per_epoch = len(train_loader)
-            for batch_index, batch in enumerate(train_loader):
+
+            for micro_step in range(accumulation_steps):
+                try:
+                    batch = next(train_iterator)
+                except StopIteration:
+                    data_pass += 1
+                    if train_sampler is not None:
+                        train_sampler.set_epoch(data_pass)
+                    train_iterator = iter(train_loader)
+                    batch = next(train_iterator)
                 targets = batch["species_index"].to(context.device)
-                group_start = (batch_index // accumulation_steps) * accumulation_steps
-                group_size = min(accumulation_steps, batches_per_epoch - group_start)
-                update_parameters = (
-                    (batch_index + 1) % accumulation_steps == 0
-                    or batch_index + 1 == batches_per_epoch
-                )
+                update_parameters = micro_step + 1 == accumulation_steps
                 sync_context = (
                     contextlib.nullcontext()
                     if update_parameters or not isinstance(model, DistributedDataParallel)
@@ -483,18 +550,24 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                             config["loss"],
                             teacher_embeddings=teacher,
                         )
-                        backward_loss = result.total / group_size
+                        backward_loss = result.total / accumulation_steps
                     scaler.scale(backward_loss).backward()
-                if update_parameters:
-                    scaler.step(optimizer)
-                    scaler.update()
-                    optimizer.zero_grad(set_to_none=True)
                 batch_size = len(targets)
                 samples += batch_size
                 running["loss"] = running.get("loss", 0.0) + result.total.item() * batch_size
                 for name, value in result.components.items():
                     running[name] = running.get(name, 0.0) + value.item() * batch_size
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
             scheduler.step()
+            global_step += 1
+
+            should_validate = (
+                global_step % validation_interval == 0 or global_step == max_steps
+            )
+            if not should_validate:
+                continue
             if context.world_size > 1:
                 names = sorted(running)
                 reduced = reduce_sum(
@@ -545,7 +618,9 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                 str(group.get("name", index)): float(group["lr"])
                 for index, group in enumerate(optimizer.param_groups)
             }
-            throughput = samples / max(time.perf_counter() - start, 1e-9)
+            throughput = samples / max(
+                time.perf_counter() - interval_start, 1e-9
+            )
             gpu_peak_memory = (
                 torch.cuda.max_memory_allocated(context.device)
                 if context.device.type == "cuda"
@@ -553,14 +628,14 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
             )
             if context.is_main:
                 LOGGER.info(
-                    "epoch=%d selected=%.5f train_loss=%.5f",
-                    epoch,
+                    "step=%d selected=%.5f train_loss=%.5f",
+                    global_step,
                     selected,
                     training_losses["loss"],
                 )
                 if wandb_logger is not None:
-                    wandb_logger.log_epoch(
-                        epoch=epoch,
+                    wandb_logger.log_step(
+                        step=global_step,
                         training_losses=training_losses,
                         metrics=metrics,
                         learning_rates=learning_rates,
@@ -589,14 +664,14 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                         optimizer=optimizer,
                         scheduler=scheduler,
                         scaler=scaler,
-                        epoch=epoch,
+                        step=global_step,
                         best_metric=selected,
                         config=config,
                         metadata=metadata,
                     )
                     best_metrics = {
                         **metrics,
-                        "best_epoch": float(epoch),
+                        "best_step": float(global_step),
                         "selection_value": float(selected),
                     }
                     write_json(
@@ -608,9 +683,14 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                         },
                     )
                     if wandb_logger is not None:
-                        wandb_logger.record_best(epoch=epoch, metrics=metrics)
+                        wandb_logger.record_best(step=global_step, metrics=metrics)
             if should_stop:
                 break
+            running = {}
+            samples = 0
+            interval_start = time.perf_counter()
+            if context.device.type == "cuda":
+                torch.cuda.reset_peak_memory_stats(context.device)
     finally:
         if wandb_logger is not None:
             wandb_logger.finish()

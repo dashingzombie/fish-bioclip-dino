@@ -14,19 +14,25 @@ workflow:
       config: configs/train/projection_only.yaml
       checkpoint: outputs/checkpoints/best-stage1.pt
       metrics: outputs/metrics/stage1.json
+      seen_inference_config: configs/inference/seen_text.yaml
     - name: final_block
       config: configs/train/final_block.yaml
       checkpoint: outputs/checkpoints/best-stage2.pt
       metrics: outputs/metrics/stage2.json
+      seen_inference_config: configs/inference/seen_text.yaml
     - name: joint_supervised_text
       config: configs/train/joint_supervised_text.yaml
       checkpoint: outputs/checkpoints/best.pt
       metrics: outputs/metrics/best.json
+      seen_inference_config: configs/inference/seen.yaml
     - name: bioclip_adapter
       config: configs/train/bioclip_adapter.yaml
       checkpoint: outputs/checkpoints/best-adapter.pt
       metrics: outputs/metrics/adapter.json
+      seen_inference_config: configs/inference/seen_adapter.yaml
+      unseen_inference_config: configs/inference/unseen_adapter.yaml
 
+  stage_submission_dir: outputs/submissions/stages
   final_checkpoint: outputs/checkpoints/best.pt
   seen_inference_config: configs/inference/seen.yaml
   unseen_inference_config: configs/inference/unseen.yaml

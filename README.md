@@ -28,20 +28,21 @@ or as an ordered SLURM dependency chain:
 python scripts/run_all.py \
   --config configs/pipeline.yaml \
   --mode slurm \
-  --gpus 1
+  --gpus 4
 ```
 
 Inspect either execution plan without running commands or calling `sbatch`:
 
 ```bash
 python scripts/run_all.py --config configs/pipeline.yaml --mode local --gpus 1 --dry-run
-python scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus 1 --dry-run
+python scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus 4 --dry-run
 ```
 
-The workflow performs prompt preparation, all three prototype-alignment/joint
-stages, the separate BioCLIP-adapter experiment, final evaluation, calibration,
-seen and unseen inference, submission merge, strict validation, and summary
-generation. Local state is saved in
+The workflow performs prompt and deterministic image-cache preparation, all
+three prototype-alignment/joint stages, the separate BioCLIP-adapter experiment,
+final evaluation, calibration, inference, submission validation, and summary
+generation. Every training stage also writes a deterministic `submission.zip`
+below `outputs/submissions/stages/<stage>/`. Local state is saved in
 `outputs/pipeline/workflow_state.json`; rerunning resumes completed steps.
 Use `--force` to rerun every local step.
 
@@ -89,16 +90,16 @@ filtering is deterministic and configurable in
 ```bash
 python -m fish_vlm.cli prepare-prompts --config configs/base.yaml
 python -m fish_vlm.cli build-text-prototypes --config configs/base.yaml
-python -m fish_vlm.cli build-teacher-cache --config configs/base.yaml
 python -m fish_vlm.cli make-pseudo-unseen --config configs/base.yaml
+python -m fish_vlm.cli build-image-cache --config configs/base.yaml
+python -m fish_vlm.cli build-teacher-cache --config configs/base.yaml
 ```
 
-The preparation job creates four persistent artifact caches: seen, unseen and
-all-class text prototypes plus the training-image teacher embeddings. Every
-builder checks and validates its destination first. A valid cache is reused
-without loading BioCLIP; an incompatible cache fails clearly instead of being
-silently overwritten. Model downloads are also kept below `cache/` through
-`HF_HOME` and `TORCH_HOME` in SLURM jobs.
+Preparation creates the three text-prototype caches, the image-teacher cache,
+and memory-mapped float16 DINO/BioCLIP transform caches for train, test, and
+unseen splits. Every builder validates its destination before model loading. A
+valid cache is reused; an incompatible cache fails instead of being overwritten.
+Model downloads are kept below `cache/` through `HF_HOME` and `TORCH_HOME`.
 
 The teacher cache reads only filenames from `train.pkl`, requires labels for
 every included image, uses the deterministic BioCLIP evaluation transform, and
@@ -140,16 +141,16 @@ python -m fish_vlm.cli evaluate --config configs/base.yaml
 Stages 1–4:
 
 ```bash
-torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
   --config configs/train/projection_only.yaml
 
-torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
   --config configs/train/final_block.yaml
 
-torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
   --config configs/train/joint_supervised_text.yaml
 
-torchrun --standalone --nproc_per_node=1 -m fish_vlm.cli train \
+torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
   --config configs/train/bioclip_adapter.yaml
 ```
 
@@ -174,12 +175,17 @@ Defaults are `1.0 * DINO text CE + 0.25 * cosine teacher`; joint training adds
 log-sum-exp-sensitive work are float32 even under AMP. BioCLIP parameters have
 `requires_grad=False` and cannot enter AdamW groups.
 
-The default 40 GB GPU profile uses BF16, a per-GPU training microbatch of 128,
-four-way gradient accumulation (effective batch 512 per GPU), and an evaluation
-batch of 256. DDP skips gradient synchronisation on accumulation-only
-microbatches. Cached-teacher stages also skip the unused BioCLIP image forward
-during training. Reduce `training.batch_size` if a specific card still runs out
-of memory; accumulation preserves the effective batch.
+Training is step-based: the four stages use 1200, 800, 800, and 600 optimizer
+steps, with validation every 100 steps. The Genome profile targets one complete
+`gpu-h200` node: four Hopper GPUs, 128 CPU cores, and 700 GB RAM. It uses BF16,
+a 512-image microbatch per GPU, no gradient accumulation, static-graph DDP,
+gradient bucket views, TF32, and fixed-shape cuDNN benchmarking. The global
+training batch is 2048 images per optimizer step.
+
+FSDP is intentionally not used. DINO and BioCLIP are frozen for most stages and
+the complete model fits easily on each GPU; sharding would add parameter
+all-gathers without removing a memory bottleneck. Cached-teacher stages also
+skip the unused BioCLIP image forward.
 
 ## Pseudo-unseen validation
 
@@ -239,8 +245,9 @@ and is opt-in.
 
 ## DDP, SLURM, sweeps, and tests
 
-Distributed samplers call `set_epoch`, exact nonlinear metrics gather predictions
-across ranks, and only rank zero writes checkpoints/metrics or starts W&B.
+All four GPUs train concurrently through one `torchrun` process group. Exact
+nonlinear metrics gather predictions across ranks, and only rank zero writes
+checkpoints/metrics or starts W&B.
 
 ```bash
 python -m fish_vlm.cli slurm --config configs/slurm/genome.yaml --dry-run
@@ -250,15 +257,17 @@ python -m fish_vlm.cli sweep \
 pytest
 ```
 
-SLURM dry-run only renders text and never invokes `sbatch`. Preparation uses the
-shared `cache/` directory so newly built artifacts persist. Each later job
-copies only that cache directory—not the repository or image dataset—to
-`${SLURM_TMPDIR}/fish-vlm-cache`, then points fish-vlm, Hugging Face and Torch
-caches at the node-local copy.
+SLURM dry-run only renders text and never invokes `sbatch`. Preparation creates a
+NUL-delimited list from the three official split files and streams only those
+raw images to node-local NVMe with one tar pipeline. It builds persistent
+deterministic transform caches from that local copy. Training jobs do not copy
+raw images; they copy only the exact model, prototype, teacher, and split-cache
+files they consume. Large cache files are copied concurrently with
+`cp --archive --reflink=auto`, and all reads then use node-local storage.
 
 The sweep is phased
 across baseline, projector, objective, learning rate, teacher weight, DINO
-adaptation, superviysed head, BioCLIP adapter, inference branch, calibration and
+adaptation, supervised head, BioCLIP adapter, inference branch, calibration and
 pseudo-unseen seed. It does not expose official labels.
 
 ## W&B result layout
@@ -268,9 +277,9 @@ Each training stage creates one clearly named W&B run in the
 
 - total and component training losses;
 - the selection score, selected seen accuracy, selected pseudo-unseen accuracy,
-  harmonic mean, and estimated overall accuracy every epoch;
-- full per-branch accuracy, balanced accuracy, macro-F1, and top-5 only on the
-  first epoch, every fifth epoch, or when a new best checkpoint is found;
+  harmonic mean, and estimated overall accuracy at validation steps;
+- full per-branch accuracy, balanced accuracy, macro-F1, and top-5 every 500
+  steps or when a new best checkpoint is found;
 - learning rates, throughput, peak GPU GiB, and trainable parameter count;
 - one `best/...` summary containing the final best scientific result.
 
