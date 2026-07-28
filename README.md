@@ -276,11 +276,21 @@ non-improving evaluations, and otherwise run for 10,000 steps except when the
 duration phase explicitly varies `max_steps`.
 
 ```bash
+python scripts/run_joint_sweeps.py --everything --dry-run
+python scripts/run_joint_sweeps.py --everything --submit --max-concurrent 8
+
+# Individual/manual phase control remains available:
 python scripts/run_joint_sweeps.py --phase loss --dry-run
 python scripts/run_joint_sweeps.py --phase loss --submit --max-concurrent 8
 python scripts/run_joint_sweeps.py --phase all --submit --max-concurrent 8
 python scripts/run_joint_sweeps.py --confirm-top 8 --submit --max-concurrent 8
 ```
+
+`--everything` is the single-command path. It first submits the existing full
+preparation/training/calibration/inference/submission workflow. The loss array
+depends on that workflow's finalisation job. Short `afterok` controller jobs
+then rank each completed phase and submit optimizer, architecture, training,
+top-eight confirmation, and the final report automatically.
 
 Each phase is one Slurm array with an optional `%N` concurrency limit. Phase
 two inherits the best completed phase-one resolved configuration; later phases

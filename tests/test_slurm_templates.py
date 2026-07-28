@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import subprocess
+
 from fish_vlm.config import load_config
+from fish_vlm.slurm.launcher import submit_slurm_script
 from fish_vlm.slurm.templates import render_batch_script
 
 
@@ -33,3 +36,35 @@ def test_array_renderer_uses_concurrency_and_task_config() -> None:
     assert "SWEEP_CONFIGS=(" in script
     assert "/work/configs/one.yaml" in script
     assert 'TRAINING_CONFIG="${SWEEP_CONFIGS[${SLURM_ARRAY_TASK_ID}]}"' in script
+
+
+def test_dependency_aware_submission_records_parsable_job_id(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def completed(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="12345;cluster\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(subprocess, "run", completed)
+    job_id = submit_slurm_script(
+        "#!/usr/bin/env bash\ntrue\n",
+        tmp_path / "job.sh",
+        dependency="999",
+    )
+    assert job_id == "12345"
+    assert calls == [
+        [
+            "sbatch",
+            "--parsable",
+            "--dependency=afterok:999",
+            str(tmp_path / "job.sh"),
+        ]
+    ]

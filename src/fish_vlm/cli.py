@@ -103,7 +103,14 @@ def build_parser() -> argparse.ArgumentParser:
     joint_sweep.add_argument("--submit", action="store_true")
     joint_sweep.add_argument("--dry-run", action="store_true")
     joint_sweep.add_argument("--resume", action="store_true")
+    joint_sweep.add_argument("--auto-chain", action="store_true")
+    joint_sweep.add_argument("--everything", action="store_true")
+    joint_sweep.add_argument("--report-only", action="store_true")
     joint_sweep.add_argument("--max-concurrent", type=int, default=8)
+    joint_sweep.add_argument(
+        "--pipeline-config",
+        default="configs/pipeline.yaml",
+    )
     joint_sweep.add_argument(
         "--output-root",
         default="outputs/sweep_pipelines/joint_supervised_text",
@@ -374,6 +381,10 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             max_concurrent=args.max_concurrent,
             resume=args.resume,
+            auto_chain=args.auto_chain,
+            everything=args.everything,
+            report_only=args.report_only,
+            pipeline_config=args.pipeline_config,
             output_root=args.output_root,
         )
         print(json.dumps(result, sort_keys=True))

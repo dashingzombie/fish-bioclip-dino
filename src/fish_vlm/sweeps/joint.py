@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import itertools
 import json
+import shlex
 import statistics
 from pathlib import Path
 from typing import Any
@@ -12,12 +13,13 @@ from typing import Any
 import yaml
 
 from fish_vlm.config import deep_merge, load_config, validate_config
-from fish_vlm.slurm.launcher import launch_slurm
+from fish_vlm.slurm.launcher import launch_slurm, submit_slurm_script
 from fish_vlm.sweeps.pipeline import _nested_overrides
 from fish_vlm.sweeps.ranking import rank_results
 from fish_vlm.sweeps.state import load_state, save_state
 from fish_vlm.utils.hashing import stable_json_hash
 from fish_vlm.utils.io import atomic_write_text, read_json, write_json
+from fish_vlm.workflow import run_all
 
 
 PHASE_ORDER = ("loss", "optimiser", "architecture", "training")
@@ -37,6 +39,8 @@ _CONFIG_ROOT = (
     / "sweeps"
     / "joint_supervised_text"
 )
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+_SCRIPT_PATH = _REPOSITORY_ROOT / "scripts" / "run_joint_sweeps.py"
 _RUN_NAME_KEYS = {
     "loss.dino_text_classification.weight": "dino_w",
     "loss.bioclip_image_teacher.weight": "teacher_w",
@@ -603,6 +607,7 @@ def _submit_array(
     index: dict[str, Any],
     max_concurrent: int,
     resume: bool,
+    dependency: str | None = None,
 ) -> str | None:
     pending = [run for run in runs if not _run_completed(run)]
     if not pending:
@@ -628,6 +633,7 @@ def _submit_array(
     launch_config["slurm"]["log_dir"] = str(
         (root / "slurm" / "logs").resolve()
     )
+    launch_config["slurm"]["dependency"] = dependency
     job_id = launch_slurm(launch_config, dry_run=False).split(";", 1)[0]
     for task_id, run in enumerate(pending):
         run["job_id"] = job_id
@@ -640,6 +646,116 @@ def _submit_array(
     save_state(state_path, state)
     _save_index(root, index)
     return job_id
+
+
+def _controller_script(
+    config: dict[str, Any],
+    *,
+    job_name: str,
+    command: list[str],
+    root: Path,
+) -> str:
+    """Render a short dependent controller through the existing Slurm profile."""
+    slurm = config["slurm"]
+    log_dir = (root / "slurm" / "logs").resolve()
+    lines = [
+        "#!/usr/bin/env bash",
+        f"#SBATCH --job-name={job_name}",
+        "#SBATCH --nodes=1",
+        "#SBATCH --gpus=1",
+        "#SBATCH --cpus-per-task=1",
+        "#SBATCH --mem=8G",
+        "#SBATCH --time=00:30:00",
+    ]
+    for key in ("account", "partition"):
+        if slurm.get(key):
+            lines.append(f"#SBATCH --{key}={slurm[key]}")
+    lines.extend(
+        [
+            f"#SBATCH --output={log_dir}/%x-%j.out",
+            f"#SBATCH --error={log_dir}/%x-%j.err",
+            "",
+            "set -euo pipefail",
+            f"cd {shlex.quote(str(_REPOSITORY_ROOT))}",
+        ]
+    )
+    if slurm.get("environment_activate"):
+        lines.append(str(slurm["environment_activate"]))
+    lines.append(shlex.join(command))
+    return "\n".join(lines) + "\n"
+
+
+def _submit_controller(
+    *,
+    root: Path,
+    index: dict[str, Any],
+    after_job_id: str,
+    completed_phase: str,
+    max_concurrent: int,
+) -> str:
+    """Submit the controller that advances to the next dependent phase."""
+    if completed_phase == "loss":
+        arguments = ["--phase", "optimiser", "--submit"]
+        controller_name = "optimiser"
+    elif completed_phase == "optimiser":
+        arguments = ["--phase", "architecture", "--submit"]
+        controller_name = "architecture"
+    elif completed_phase == "architecture":
+        arguments = ["--phase", "training", "--submit"]
+        controller_name = "training"
+    elif completed_phase == "training":
+        arguments = ["--confirm-top", "8", "--submit"]
+        controller_name = "confirmation"
+    elif completed_phase == "confirmation":
+        arguments = ["--report-only"]
+        controller_name = "report"
+    else:
+        raise ValueError(f"Cannot chain after unknown phase {completed_phase!r}")
+
+    arguments.extend(
+        [
+            "--resume",
+            "--auto-chain",
+            "--max-concurrent",
+            str(max_concurrent),
+            "--output-root",
+            str(root),
+        ]
+    )
+    command = [
+        "python",
+        str(_SCRIPT_PATH),
+        *arguments,
+    ]
+    reference = next(
+        (
+            run
+            for run in index["runs"]
+            if run["phase"] == completed_phase
+        ),
+        None,
+    )
+    if reference is None:
+        reference = index["runs"][0]
+    config = load_config(reference["config_path"])
+    script = _controller_script(
+        config,
+        job_name=f"fish-joint-next-{controller_name}",
+        command=command,
+        root=root,
+    )
+    (root / "slurm" / "logs").mkdir(parents=True, exist_ok=True)
+    controller_id = submit_slurm_script(
+        script,
+        root / "slurm" / "controllers" / f"after-{completed_phase}.sh",
+        dependency=after_job_id,
+    )
+    state_path = root / "state.json"
+    state = load_state(state_path)
+    phase_state = state["phases"].setdefault(completed_phase, {})
+    phase_state.setdefault("controller_job_ids", []).append(controller_id)
+    save_state(state_path, state)
+    return controller_id
 
 
 def _summary_rows(index: dict[str, Any]) -> list[dict[str, Any]]:
@@ -763,6 +879,10 @@ def run_joint_sweeps(
     dry_run: bool = False,
     max_concurrent: int = 8,
     resume: bool = False,
+    auto_chain: bool = False,
+    everything: bool = False,
+    report_only: bool = False,
+    pipeline_config: str | Path = "configs/pipeline.yaml",
     output_root: str | Path = DEFAULT_OUTPUT_ROOT,
 ) -> dict[str, Any]:
     """Materialise, resume, summarize, and optionally submit sweep arrays."""
@@ -772,11 +892,89 @@ def run_joint_sweeps(
         raise ValueError("--max-concurrent must be at least one")
     if confirm_top is not None and confirm_top < 1:
         raise ValueError("--confirm-top must be at least one")
+    if everything and confirm_top is not None:
+        raise ValueError("--everything cannot be combined with --confirm-top")
     root = Path(output_root).resolve()
     index = _load_index(root)
     generated: list[dict[str, Any]] = []
     blocked: list[str] = []
     job_ids: list[str] = []
+    controller_job_ids: list[str] = []
+    bootstrap: dict[str, Any] | None = None
+
+    if report_only:
+        rows = _summary_rows(index)
+        _save_index(root, index)
+        print(format_summary_table(rows))
+        confirmation = confirmation_ranking(index)
+        if confirmation:
+            print("\nconfirmation ranking")
+            print(json.dumps(confirmation, indent=2, sort_keys=True))
+        return {
+            "dry_run": dry_run,
+            "submitted": False,
+            "generated_runs": 0,
+            "job_ids": [],
+            "controller_job_ids": [],
+            "blocked": [],
+            "run_index": str(_index_path(root)),
+            "completed_runs": sum(
+                row["status"] == "completed" for row in rows
+            ),
+            "confirmation_ranking": confirmation,
+        }
+
+    initial_dependency: str | None = None
+    if everything:
+        pipeline = load_config(pipeline_config)
+        if dry_run:
+            bootstrap_plan = run_all(
+                pipeline,
+                mode="slurm",
+                dry_run=True,
+                gpus=int(pipeline["slurm"].get("gpus", 4)),
+            )
+            bootstrap = {
+                "dry_run": True,
+                "workflow_hash": bootstrap_plan["workflow_hash"],
+                "jobs": [
+                    {
+                        "name": job["name"],
+                        "gpus": job["gpus"],
+                        "depends_on": job["depends_on"],
+                    }
+                    for job in bootstrap_plan["jobs"]
+                ],
+            }
+        elif submit:
+            state_path = root / "state.json"
+            state = load_state(state_path)
+            master = state.setdefault("master_pipeline", {})
+            if master.get("jobs"):
+                if not resume:
+                    raise ValueError(
+                        "The master pipeline was already submitted; "
+                        "pass --resume to continue incomplete work"
+                    )
+                bootstrap = {
+                    "mode": "slurm",
+                    "status": "submitted",
+                    "jobs": master["jobs"],
+                }
+            else:
+                bootstrap = run_all(
+                    pipeline,
+                    mode="slurm",
+                    gpus=int(pipeline["slurm"].get("gpus", 4)),
+                )
+                master["jobs"] = bootstrap["jobs"]
+                master["workflow_hash"] = bootstrap["workflow_hash"]
+                save_state(state_path, state)
+            initial_dependency = str(
+                bootstrap["jobs"]["finalisation"]
+            )
+        phase = "loss"
+        auto_chain = True
 
     if confirm_top is not None:
         generated = _confirmation_candidates(
@@ -794,6 +992,16 @@ def run_joint_sweeps(
             )
             if job_id:
                 job_ids.append(job_id)
+                if auto_chain:
+                    controller_job_ids.append(
+                        _submit_controller(
+                            root=root,
+                            index=index,
+                            after_job_id=job_id,
+                            completed_phase="confirmation",
+                            max_concurrent=max_concurrent,
+                        )
+                    )
     else:
         selected_phases = (
             PHASE_ORDER if phase == "all" else (phase or "loss",)
@@ -815,9 +1023,35 @@ def run_joint_sweeps(
                     index=index,
                     max_concurrent=max_concurrent,
                     resume=resume,
+                    dependency=initial_dependency,
                 )
                 if job_id:
                     job_ids.append(job_id)
+                    if auto_chain:
+                        controller_job_ids.append(
+                            _submit_controller(
+                                root=root,
+                                index=index,
+                                after_job_id=job_id,
+                                completed_phase=selected,
+                                max_concurrent=max_concurrent,
+                            )
+                        )
+                elif (
+                    auto_chain
+                    and initial_dependency
+                    and all(_run_completed(run) for run in phase_runs)
+                ):
+                    controller_job_ids.append(
+                        _submit_controller(
+                            root=root,
+                            index=index,
+                            after_job_id=initial_dependency,
+                            completed_phase=selected,
+                            max_concurrent=max_concurrent,
+                        )
+                    )
+                initial_dependency = None
             if selected_phases == PHASE_ORDER and not all(
                 _run_completed(run) for run in phase_runs
             ):
@@ -841,8 +1075,10 @@ def run_joint_sweeps(
         "submitted": submit,
         "generated_runs": len(generated),
         "job_ids": job_ids,
+        "controller_job_ids": controller_job_ids,
         "blocked": blocked,
         "run_index": str(_index_path(root)),
         "completed_runs": sum(row["status"] == "completed" for row in rows),
         "confirmation_ranking": confirmation,
+        "bootstrap": bootstrap,
     }

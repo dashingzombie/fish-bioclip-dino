@@ -247,3 +247,104 @@ def test_array_submission_records_jobs_and_resume_skips_completed(
     state = json.loads((root / "state.json").read_text(encoding="utf-8"))
     assert state["phases"]["loss"]["job_ids"] == ["1201", "1202"]
     assert state["phases"]["loss"]["max_concurrent"] == 4
+
+
+def test_everything_dry_run_plans_pipeline_without_submission(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    calls: list[dict] = []
+
+    def fake_run_all(config, **kwargs):
+        calls.append(kwargs)
+        return {
+            "dry_run": True,
+            "workflow_hash": "workflow",
+            "jobs": [
+                {
+                    "name": "preparation",
+                    "gpus": 1,
+                    "depends_on": None,
+                }
+            ],
+        }
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("everything dry-run must not submit jobs")
+
+    monkeypatch.setattr("fish_vlm.sweeps.joint.run_all", fake_run_all)
+    monkeypatch.setattr("fish_vlm.sweeps.joint.launch_slurm", forbidden)
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_slurm_script",
+        forbidden,
+    )
+    result = run_joint_sweeps(
+        everything=True,
+        dry_run=True,
+        output_root=tmp_path / "sweep",
+    )
+    capsys.readouterr()
+    assert calls == [{"mode": "slurm", "dry_run": True, "gpus": 4}]
+    assert result["generated_runs"] == 30
+    assert result["job_ids"] == []
+    assert result["controller_job_ids"] == []
+
+
+def test_everything_submits_pipeline_array_and_next_controller(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    observed: dict[str, object] = {}
+
+    def fake_run_all(config, **kwargs):
+        assert kwargs == {"mode": "slurm", "gpus": 4}
+        return {
+            "mode": "slurm",
+            "status": "submitted",
+            "workflow_hash": "workflow",
+            "jobs": {
+                "preparation": "800",
+                "training_projection_only": "801",
+                "training_final_block": "802",
+                "training_joint_supervised_text": "803",
+                "training_bioclip_adapter": "804",
+                "finalisation": "805",
+            },
+        }
+
+    def fake_launch(config, *, dry_run):
+        assert dry_run is False
+        observed["array_dependency"] = config["slurm"]["dependency"]
+        observed["array_size"] = len(config["slurm"]["array_configs"])
+        return "900"
+
+    def fake_submit(script, path, *, dependency):
+        observed["controller_dependency"] = dependency
+        observed["controller_script"] = script
+        return "901"
+
+    monkeypatch.setattr("fish_vlm.sweeps.joint.run_all", fake_run_all)
+    monkeypatch.setattr("fish_vlm.sweeps.joint.launch_slurm", fake_launch)
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_slurm_script",
+        fake_submit,
+    )
+    result = run_joint_sweeps(
+        everything=True,
+        submit=True,
+        max_concurrent=8,
+        output_root=tmp_path / "sweep",
+    )
+    capsys.readouterr()
+    assert result["job_ids"] == ["900"]
+    assert result["controller_job_ids"] == ["901"]
+    assert observed["array_dependency"] == "805"
+    assert observed["array_size"] == 30
+    assert observed["controller_dependency"] == "900"
+    assert "--phase optimiser" in str(observed["controller_script"])
+    state = json.loads(
+        (tmp_path / "sweep" / "state.json").read_text(encoding="utf-8")
+    )
+    assert state["master_pipeline"]["jobs"]["finalisation"] == "805"

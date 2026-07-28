@@ -11,6 +11,29 @@ from fish_vlm.slurm.templates import render_batch_script
 from fish_vlm.utils.io import atomic_write_text
 
 
+def submit_slurm_script(
+    script: str,
+    path: str | Path,
+    *,
+    dependency: str | None = None,
+) -> str:
+    """Persist and submit one script with an optional strict dependency."""
+    script_path = Path(path)
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(script_path, script)
+    command = ["sbatch", "--parsable"]
+    if dependency:
+        command.append(f"--dependency=afterok:{dependency}")
+    command.append(str(script_path))
+    result = subprocess.run(
+        command,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip().split(";", 1)[0]
+
+
 def launch_slurm(config: dict[str, Any], *, dry_run: bool) -> str:
     """Render a script; submit only when explicitly not in dry-run mode."""
     slurm = config["slurm"]
@@ -36,13 +59,8 @@ def launch_slurm(config: dict[str, Any], *, dry_run: bool) -> str:
     script_name = f"{job_name}-{'array' if is_array else 'job'}.sh"
     script_path = script_dir / script_name
 
-    atomic_write_text(script_path, script)
-
-    result = subprocess.run(
-        ["sbatch", "--parsable", str(script_path)],
-        check=True,
-        capture_output=True,
-        text=True,
+    return submit_slurm_script(
+        script,
+        script_path,
+        dependency=slurm.get("dependency"),
     )
-
-    return result.stdout.strip()
