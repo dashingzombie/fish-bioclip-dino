@@ -2,7 +2,6 @@ defaults: [base.yaml]
 
 workflow:
   preparation_config: configs/pipeline.yaml
-  local_gpus: 1
   preparation_gpus: 1
   final_gpus: 1
   cpus: 128

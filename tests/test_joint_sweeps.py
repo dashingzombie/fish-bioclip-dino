@@ -17,6 +17,17 @@ from fish_vlm.sweeps.joint import (
 from fish_vlm.utils.io import write_json
 
 
+def test_makefile_exposes_only_the_unified_pipeline_targets() -> None:
+    makefile = Path("Makefile").read_text(encoding="utf-8")
+    assert "everything:" in makefile
+    assert "everything-dry-run:" in makefile
+    assert "everything-resume:" in makefile
+    assert "scripts/run_joint_sweeps.py --everything --submit" in makefile
+    assert "scripts/run_all.py" not in makefile
+    assert "run-all-" not in makefile
+    assert "sweep-dry-run:" not in makefile
+
+
 def _index(root: Path) -> dict:
     return json.loads((root / "run_index.json").read_text(encoding="utf-8"))
 
@@ -256,7 +267,7 @@ def test_everything_dry_run_plans_pipeline_without_submission(
 ) -> None:
     calls: list[dict] = []
 
-    def fake_run_all(config, **kwargs):
+    def fake_bootstrap(config, **kwargs):
         calls.append(kwargs)
         return {
             "dry_run": True,
@@ -273,7 +284,10 @@ def test_everything_dry_run_plans_pipeline_without_submission(
     def forbidden(*args, **kwargs):
         raise AssertionError("everything dry-run must not submit jobs")
 
-    monkeypatch.setattr("fish_vlm.sweeps.joint.run_all", fake_run_all)
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_bootstrap_pipeline",
+        fake_bootstrap,
+    )
     monkeypatch.setattr("fish_vlm.sweeps.joint.launch_slurm", forbidden)
     monkeypatch.setattr(
         "fish_vlm.sweeps.joint.submit_slurm_script",
@@ -285,7 +299,7 @@ def test_everything_dry_run_plans_pipeline_without_submission(
         output_root=tmp_path / "sweep",
     )
     capsys.readouterr()
-    assert calls == [{"mode": "slurm", "dry_run": True, "gpus": 4}]
+    assert calls == [{"dry_run": True, "gpus": 4}]
     assert result["generated_runs"] == 30
     assert result["job_ids"] == []
     assert result["controller_job_ids"] == []
@@ -298,8 +312,8 @@ def test_everything_submits_pipeline_array_and_next_controller(
 ) -> None:
     observed: dict[str, object] = {}
 
-    def fake_run_all(config, **kwargs):
-        assert kwargs == {"mode": "slurm", "gpus": 4}
+    def fake_bootstrap(config, **kwargs):
+        assert kwargs == {"dry_run": False, "gpus": 4}
         return {
             "mode": "slurm",
             "status": "submitted",
@@ -325,7 +339,10 @@ def test_everything_submits_pipeline_array_and_next_controller(
         observed["controller_script"] = script
         return "901"
 
-    monkeypatch.setattr("fish_vlm.sweeps.joint.run_all", fake_run_all)
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_bootstrap_pipeline",
+        fake_bootstrap,
+    )
     monkeypatch.setattr("fish_vlm.sweeps.joint.launch_slurm", fake_launch)
     monkeypatch.setattr(
         "fish_vlm.sweeps.joint.submit_slurm_script",

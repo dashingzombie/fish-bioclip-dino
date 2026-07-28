@@ -2,11 +2,14 @@ PYTHON ?= python
 CONFIG ?= configs/base.yaml
 CHECKPOINT ?= outputs/checkpoints/best.pt
 GPUS ?= 4
+MAX_CONCURRENT ?= 8
+PIPELINE_CONFIG ?= configs/pipeline.yaml
+SWEEP_OUTPUT ?= outputs/sweep_pipelines/joint_supervised_text
 
 .PHONY: install test prepare-prompts build-text-prototypes build-image-cache build-teacher-cache \
 	pseudo-unseen train evaluate-zero-shot evaluate calibrate infer-test infer-unseen \
-	submission validate-submission slurm-dry-run slurm-submit sweep-dry-run \
-	run-all-local run-all-local-dry-run run-all-slurm run-all-slurm-dry-run
+	submission validate-submission slurm-dry-run slurm-submit \
+	everything everything-dry-run everything-resume
 
 install:
 	$(PYTHON) -m pip install -e '.[dev]'
@@ -68,17 +71,20 @@ slurm-dry-run:
 slurm-submit:
 	$(PYTHON) -m fish_vlm.cli slurm --config configs/slurm/genome.yaml
 
-sweep-dry-run:
-	$(PYTHON) -m fish_vlm.cli sweep --config configs/sweeps/multimodal_pipeline.yaml --dry-run
+everything:
+	$(PYTHON) scripts/run_joint_sweeps.py --everything --submit \
+		--max-concurrent $(MAX_CONCURRENT) \
+		--pipeline-config $(PIPELINE_CONFIG) \
+		--output-root $(SWEEP_OUTPUT)
 
-run-all-local:
-	$(PYTHON) scripts/run_all.py --config configs/pipeline.yaml --mode local --gpus $(GPUS)
+everything-dry-run:
+	$(PYTHON) scripts/run_joint_sweeps.py --everything --dry-run \
+		--max-concurrent $(MAX_CONCURRENT) \
+		--pipeline-config $(PIPELINE_CONFIG) \
+		--output-root $(SWEEP_OUTPUT)
 
-run-all-local-dry-run:
-	$(PYTHON) scripts/run_all.py --config configs/pipeline.yaml --mode local --gpus $(GPUS) --dry-run
-
-run-all-slurm:
-	$(PYTHON) scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus $(GPUS)
-
-run-all-slurm-dry-run:
-	$(PYTHON) scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus $(GPUS) --dry-run
+everything-resume:
+	$(PYTHON) scripts/run_joint_sweeps.py --everything --submit --resume \
+		--max-concurrent $(MAX_CONCURRENT) \
+		--pipeline-config $(PIPELINE_CONFIG) \
+		--output-root $(SWEEP_OUTPUT)

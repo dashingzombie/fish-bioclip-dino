@@ -1,10 +1,9 @@
-"""One-command local or dependency-chained SLURM pipeline execution."""
+"""Internal bootstrap workflow used by the unified sweep entry point."""
 
 from __future__ import annotations
 
-import subprocess
-import sys
 import copy
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,7 +11,7 @@ from typing import Any
 from fish_vlm.inference.validation import validate_submission
 from fish_vlm.slurm.templates import render_workflow_batch_script
 from fish_vlm.utils.hashing import stable_json_hash
-from fish_vlm.utils.io import read_json, write_json, atomic_write_text
+from fish_vlm.utils.io import atomic_write_text, read_json, write_json
 
 
 @dataclass(frozen=True)
@@ -35,19 +34,15 @@ def _resolved(root: Path, value: str) -> str:
     return str(path if path.is_absolute() else (root / path).resolve())
 
 
-def build_workflow_steps(
+def build_slurm_workflow_steps(
     config: dict[str, Any],
-    *,
-    python_executable: str | None = None,
-    slurm: bool = False,
 ) -> list[WorkflowStep]:
-    """Build the exact ordered commands shared by local and SLURM modes."""
+    """Build the exact ordered bootstrap commands for Slurm."""
     workflow = config["workflow"]
     root = _root(config)
-    python = "python" if slurm else (python_executable or sys.executable)
+    python = "python"
     base_config = _resolved(root, workflow.get("preparation_config", "configs/pipeline.yaml"))
-    local_gpus = int(workflow.get("local_gpus", 1))
-    training_gpus = int(config["slurm"].get("gpus", 2)) if slurm else local_gpus
+    training_gpus = int(config["slurm"].get("gpus", 2))
     prepare_gpus = int(workflow.get("preparation_gpus", 1))
     final_gpus = int(workflow.get("final_gpus", 1))
 
@@ -342,61 +337,19 @@ def _workflow_state_path(config: dict[str, Any]) -> Path:
     return output / "pipeline" / "workflow_state.json"
 
 
-def run_local_workflow(
+def submit_bootstrap_pipeline(
     config: dict[str, Any],
     *,
     dry_run: bool,
-    force: bool,
+    gpus: int | None = None,
 ) -> dict[str, Any]:
-    """Run every command sequentially, stopping immediately on failure."""
-    steps = build_workflow_steps(config)
-    commands = [{"name": step.name, "command": step.command} for step in steps]
-    workflow_hash = stable_json_hash(commands)
-    if dry_run:
-        return {
-            "mode": "local",
-            "dry_run": True,
-            "workflow_hash": workflow_hash,
-            "steps": commands,
-        }
-    state_path = _workflow_state_path(config)
-    state = read_json(state_path) if state_path.exists() and not force else None
-    if state is not None and state.get("workflow_hash") != workflow_hash:
-        raise ValueError(
-            "Existing workflow state belongs to a different command plan; use --force"
-        )
-    if state is None:
-        state = {"mode": "local", "workflow_hash": workflow_hash, "steps": {}}
-    for step in steps:
-        if state["steps"].get(step.name, {}).get("status") == "completed" and not force:
-            continue
-        state["steps"][step.name] = {"status": "running", "command": step.command}
-        write_json(state_path, state)
-        try:
-            subprocess.run(step.command, check=True, cwd=_root(config))
-        except subprocess.CalledProcessError as error:
-            state["steps"][step.name] = {
-                "status": "failed",
-                "command": step.command,
-                "returncode": error.returncode,
-            }
-            state["status"] = "failed"
-            write_json(state_path, state)
-            raise
-        state["steps"][step.name] = {"status": "completed", "command": step.command}
-        write_json(state_path, state)
-    state["status"] = "completed"
-    write_json(state_path, state)
-    return state
-
-
-def run_slurm_workflow(
-    config: dict[str, Any],
-    *,
-    dry_run: bool,
-) -> dict[str, Any]:
-    """Submit grouped jobs linked by strict ``afterok`` dependencies."""
-    steps = build_workflow_steps(config, slurm=True)
+    """Render or submit the bootstrap jobs linked by strict dependencies."""
+    if gpus is not None:
+        if gpus < 1:
+            raise ValueError("gpus must be at least one")
+        config = copy.deepcopy(config)
+        config["slurm"]["gpus"] = gpus
+    steps = build_slurm_workflow_steps(config)
     groups: list[tuple[str, int, list[list[str]]]] = []
     for step in steps:
         if groups and groups[-1][0] == step.group:
@@ -462,32 +415,6 @@ def run_slurm_workflow(
     }
     write_json(_workflow_state_path(config), state)
     return state
-
-
-def run_all(
-    config: dict[str, Any],
-    *,
-    mode: str,
-    dry_run: bool = False,
-    force: bool = False,
-    gpus: int | None = None,
-) -> dict[str, Any]:
-    """Run or submit the entire pipeline in one call."""
-    if gpus is not None:
-        if gpus < 1:
-            raise ValueError("gpus must be at least one")
-        config = copy.deepcopy(config)
-        if mode == "local":
-            config["workflow"]["local_gpus"] = gpus
-        elif mode == "slurm":
-            config["slurm"]["gpus"] = gpus
-    if mode == "local":
-        return run_local_workflow(config, dry_run=dry_run, force=force)
-    if mode == "slurm":
-        if force:
-            raise ValueError("--force is only meaningful for local workflow state")
-        return run_slurm_workflow(config, dry_run=dry_run)
-    raise ValueError("mode must be local or slurm")
 
 
 def write_pipeline_summary(config: dict[str, Any]) -> dict[str, Any]:

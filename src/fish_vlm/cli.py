@@ -38,7 +38,6 @@ from fish_vlm.prototypes.text import (
     load_text_prototype_cache,
 )
 from fish_vlm.slurm.launcher import launch_slurm
-from fish_vlm.sweeps.pipeline import run_pipeline
 from fish_vlm.training.train import (
     _cache_path,
     _data_processed_path,
@@ -49,7 +48,7 @@ from fish_vlm.training.train import (
 )
 from fish_vlm.utils.io import write_json
 from fish_vlm.utils.logging import configure_logging
-from fish_vlm.workflow import run_all, write_pipeline_summary
+from fish_vlm.workflow import write_pipeline_summary
 
 
 def _config_parser(subparsers: Any, name: str, *, checkpoint: bool = False) -> argparse.ArgumentParser:
@@ -91,8 +90,6 @@ def build_parser() -> argparse.ArgumentParser:
     image_list = _config_parser(commands, "list-images")
     image_list.add_argument("--output", required=True)
     image_list.add_argument("--missing-image-cache-only", action="store_true")
-    sweep = _config_parser(commands, "sweep")
-    sweep.add_argument("--dry-run", action="store_true")
     joint_sweep = commands.add_parser("joint-sweep")
     joint_sweep.add_argument(
         "--phase",
@@ -117,11 +114,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     slurm = _config_parser(commands, "slurm")
     slurm.add_argument("--dry-run", action="store_true")
-    run_all_parser = _config_parser(commands, "run-all")
-    run_all_parser.add_argument("--mode", choices=("local", "slurm"), required=True)
-    run_all_parser.add_argument("--dry-run", action="store_true")
-    run_all_parser.add_argument("--force", action="store_true")
-    run_all_parser.add_argument("--gpus", type=int)
     _config_parser(commands, "pipeline-summary")
     return parser
 
@@ -445,23 +437,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"predictions": len(result), "output": args.output}))
     elif args.command == "validate-submission":
         print(json.dumps(validate_submission(args.submission, config), sort_keys=True))
-    elif args.command == "sweep":
-        print(json.dumps(run_pipeline(config, dry_run=args.dry_run), sort_keys=True))
     elif args.command == "slurm":
         print(launch_slurm(config, dry_run=args.dry_run))
-    elif args.command == "run-all":
-        print(
-            json.dumps(
-                run_all(
-                    config,
-                    mode=args.mode,
-                    dry_run=args.dry_run,
-                    force=args.force,
-                    gpus=args.gpus,
-                ),
-                sort_keys=True,
-            )
-        )
     elif args.command == "pipeline-summary":
         print(json.dumps(write_pipeline_summary(config), sort_keys=True))
     return 0

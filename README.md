@@ -12,43 +12,32 @@ one deterministic canonical prompt, and one frozen BioCLIP text prototype.
 
 ## Run everything with one command
 
-After setting `data.root_dir` in `configs/base.yaml`, the complete workflow can
-run locally:
+After setting `data.root_dir` in `configs/base.yaml`, inspect the complete
+SLURM workflow without submitting jobs:
 
 ```bash
-python scripts/run_all.py \
-  --config configs/pipeline.yaml \
-  --mode local \
-  --gpus 1
+make everything-dry-run
 ```
 
-or as an ordered SLURM dependency chain:
+Submit preparation, training, calibration/inference/submission, all four sweep
+phases, top-eight multi-seed confirmation, and the final report:
 
 ```bash
-python scripts/run_all.py \
-  --config configs/pipeline.yaml \
-  --mode slurm \
-  --gpus 4
+make everything MAX_CONCURRENT=8
 ```
 
-Inspect either execution plan without running commands or calling `sbatch`:
+Resume the same run without resubmitting completed work:
 
 ```bash
-python scripts/run_all.py --config configs/pipeline.yaml --mode local --gpus 1 --dry-run
-python scripts/run_all.py --config configs/pipeline.yaml --mode slurm --gpus 4 --dry-run
+make everything-resume MAX_CONCURRENT=8
 ```
 
-The workflow performs prompt and deterministic image-cache preparation, all
-three prototype-alignment/joint stages, the separate BioCLIP-adapter experiment,
-final evaluation, calibration, inference, submission validation, and summary
-generation. Every training stage also writes a deterministic `submission.zip`
-below `outputs/submissions/stages/<stage>/`. Local state is saved in
-`outputs/pipeline/workflow_state.json`; rerunning resumes completed steps.
-Use `--force` to rerun every local step.
-
-SLURM creates six jobs connected by `afterok`: preparation, four training jobs,
-and finalisation. A failed job therefore prevents dependent jobs from using
-partial outputs.
+The bootstrap workflow creates six jobs connected by `afterok`: preparation,
+four training jobs, and finalisation. Preparation builds deterministic caches
+and copies them back to persistent cache storage before the node-local working
+directory disappears. Each training stage writes a deterministic
+`submission.zip` below `outputs/submissions/stages/<stage>/`. A failed job
+prevents dependent jobs and sweeps from using partial outputs.
 
 The final human-readable result is
 `outputs/metrics/pipeline_summary.json`. It contains stage results, final branch
@@ -255,8 +244,6 @@ checkpoints/metrics or starts W&B.
 ```bash
 python -m fish_vlm.cli slurm --config configs/slurm/genome.yaml --dry-run
 python -m fish_vlm.cli slurm --config configs/slurm/genome.yaml
-python -m fish_vlm.cli sweep \
-  --config configs/sweeps/multimodal_pipeline.yaml --dry-run
 pytest
 ```
 
@@ -276,8 +263,9 @@ non-improving evaluations, and otherwise run for 10,000 steps except when the
 duration phase explicitly varies `max_steps`.
 
 ```bash
-python scripts/run_joint_sweeps.py --everything --dry-run
-python scripts/run_joint_sweeps.py --everything --submit --max-concurrent 8
+make everything-dry-run
+make everything MAX_CONCURRENT=8
+make everything-resume MAX_CONCURRENT=8
 
 # Individual/manual phase control remains available:
 python scripts/run_joint_sweeps.py --phase loss --dry-run
@@ -286,7 +274,7 @@ python scripts/run_joint_sweeps.py --phase all --submit --max-concurrent 8
 python scripts/run_joint_sweeps.py --confirm-top 8 --submit --max-concurrent 8
 ```
 
-`--everything` is the single-command path. It first submits the existing full
+`make everything` is the single-command path. It first submits the full
 preparation/training/calibration/inference/submission workflow. The loss array
 depends on that workflow's finalisation job. Short `afterok` controller jobs
 then rank each completed phase and submit optimizer, architecture, training,

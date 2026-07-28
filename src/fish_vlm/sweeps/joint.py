@@ -14,12 +14,11 @@ import yaml
 
 from fish_vlm.config import deep_merge, load_config, validate_config
 from fish_vlm.slurm.launcher import launch_slurm, submit_slurm_script
-from fish_vlm.sweeps.pipeline import _nested_overrides
 from fish_vlm.sweeps.ranking import rank_results
 from fish_vlm.sweeps.state import load_state, save_state
 from fish_vlm.utils.hashing import stable_json_hash
 from fish_vlm.utils.io import atomic_write_text, read_json, write_json
-from fish_vlm.workflow import run_all
+from fish_vlm.workflow import submit_bootstrap_pipeline
 
 
 PHASE_ORDER = ("loss", "optimiser", "architecture", "training")
@@ -60,6 +59,17 @@ _RUN_NAME_KEYS = {
     "training.gradient_accumulation_steps": "accum",
     "training.max_steps": "steps",
 }
+
+
+def _nested_overrides(overrides: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for dotted, value in overrides.items():
+        target = result
+        parts = dotted.split(".")
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = value
+    return result
 
 
 def _phase_path(phase: str) -> Path:
@@ -928,9 +938,8 @@ def run_joint_sweeps(
     if everything:
         pipeline = load_config(pipeline_config)
         if dry_run:
-            bootstrap_plan = run_all(
+            bootstrap_plan = submit_bootstrap_pipeline(
                 pipeline,
-                mode="slurm",
                 dry_run=True,
                 gpus=int(pipeline["slurm"].get("gpus", 4)),
             )
@@ -962,9 +971,9 @@ def run_joint_sweeps(
                     "jobs": master["jobs"],
                 }
             else:
-                bootstrap = run_all(
+                bootstrap = submit_bootstrap_pipeline(
                     pipeline,
-                    mode="slurm",
+                    dry_run=False,
                     gpus=int(pipeline["slurm"].get("gpus", 4)),
                 )
                 master["jobs"] = bootstrap["jobs"]
