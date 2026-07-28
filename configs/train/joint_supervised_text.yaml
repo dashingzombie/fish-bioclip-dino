@@ -3,7 +3,7 @@ training:
   stage: joint_supervised_text
   checkpoint_name: best.pt
   metrics_name: best.json
-  max_steps: 800
+  max_steps: 4000
   lr: 0.0001
   weight_decay: 0.01
   resume_checkpoint: outputs/checkpoints/best-stage2.pt

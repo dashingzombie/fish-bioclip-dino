@@ -491,6 +491,7 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
     samples = 0
     interval_start = time.perf_counter()
     optimizer.zero_grad(set_to_none=True)
+    print(f"Training for {max_steps} steps with validation every {validation_interval} steps")
     if context.device.type == "cuda":
         torch.cuda.reset_peak_memory_stats(context.device)
     try:
@@ -682,6 +683,7 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                             "checkpoint": str(output_dir / "checkpoints" / checkpoint_name),
                         },
                     )
+                    print(f"Saved improved checkpoint at step {global_step} with {selection_metric}={selected:.5f}")
                     if wandb_logger is not None:
                         wandb_logger.record_best(step=global_step, metrics=metrics)
             if should_stop:

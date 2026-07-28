@@ -3,7 +3,7 @@ training:
   stage: final_block
   checkpoint_name: best-stage2.pt
   metrics_name: stage2.json
-  max_steps: 800
+  max_steps: 4000
   lr: 0.0001
   weight_decay: 0.01
   resume_checkpoint: outputs/checkpoints/best-stage1.pt
