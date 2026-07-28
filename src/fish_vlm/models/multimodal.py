@@ -8,7 +8,12 @@ import torch
 from torch import nn
 
 from fish_vlm.models.bioclip import encode_bioclip_images
-from fish_vlm.models.fusion import CalibrationParameters, fuse_seen_probabilities, fuse_text_probabilities
+from fish_vlm.models.fusion import (
+    CalibrationParameters,
+    expanded_supervised_probabilities,
+    fuse_seen_probabilities,
+    fuse_text_probabilities,
+)
 
 
 @dataclass
@@ -79,6 +84,8 @@ class FishMultimodalModel(nn.Module):
         output: ModelOutput,
         mode: str,
         calibration: CalibrationParameters,
+        *,
+        supervised_class_indices: list[int] | torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Return probabilities for an explicit inference mode."""
         if mode == "dino_text":
@@ -94,11 +101,20 @@ class FishMultimodalModel(nn.Module):
         if mode == "supervised":
             if output.supervised_logits is None:
                 raise ValueError("Supervised branch is unavailable")
-            return torch.softmax(output.supervised_logits.float() / calibration.supervised_temperature, dim=-1)
+            return expanded_supervised_probabilities(
+                output.supervised_logits,
+                calibration.supervised_temperature,
+                class_count=output.dino_text_logits.shape[1],
+                class_indices=supervised_class_indices,
+            )
         if mode == "supervised_plus_text":
             if output.supervised_logits is None or output.bioclip_logits is None:
                 raise ValueError("Seen fusion requires supervised and both text branches")
             text = fuse_text_probabilities(output.dino_text_logits, output.bioclip_logits, calibration)
-            return fuse_seen_probabilities(output.supervised_logits, text, calibration)
+            return fuse_seen_probabilities(
+                output.supervised_logits,
+                text,
+                calibration,
+                supervised_class_indices=supervised_class_indices,
+            )
         raise ValueError(f"Unknown inference mode: {mode}")
-

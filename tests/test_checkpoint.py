@@ -8,7 +8,12 @@ import torch
 from conftest import TinyDino
 from fish_vlm.models.multimodal import FishMultimodalModel
 from fish_vlm.models.projector import LearnableLogitScale, LinearDinoToBioClipProjector
-from fish_vlm.training.checkpoint import load_checkpoint, save_checkpoint
+from fish_vlm.training.checkpoint import (
+    checkpoint_training_species,
+    load_checkpoint,
+    save_checkpoint,
+)
+from fish_vlm.utils.hashing import ordered_names_hash
 
 
 def _model() -> FishMultimodalModel:
@@ -28,7 +33,8 @@ def test_checkpoint_round_trip_and_order_rejection(tmp_path: Path) -> None:
         "canonical_prompt_hash": "all-prompts",
         "seen_species": ["A", "B"],
         "unseen_species": ["C"],
-        "training_species_hash": "training",
+        "training_species": ["A", "B"],
+        "training_species_hash": ordered_names_hash(["A", "B"]),
         "pseudo_unseen_split_hash": None,
         "active_losses": ["dino_text_classification"],
     }
@@ -38,11 +44,27 @@ def test_checkpoint_round_trip_and_order_rejection(tmp_path: Path) -> None:
     )
     loaded = load_checkpoint(
         path, _model(), expected_seen_species=["A", "B"], expected_unseen_species=["C"],
-        expected_text_prototype_hash="prompts", expected_training_species_hash="training",
+        expected_text_prototype_hash="prompts",
+        expected_training_species_hash=ordered_names_hash(["A", "B"]),
     )
     assert loaded["step"] == 300
+    assert checkpoint_training_species(
+        loaded, seen_species=["A", "B"]
+    ) == ["A", "B"]
     with pytest.raises(ValueError, match="Incompatible"):
         load_checkpoint(
             path, _model(), expected_seen_species=["B", "A"], expected_unseen_species=["C"],
             expected_text_prototype_hash="prompts",
+        )
+
+
+def test_checkpoint_training_species_rejects_invalid_metadata() -> None:
+    checkpoint = {
+        "training_species": ["A", "B"],
+        "training_species_hash": "wrong",
+    }
+    with pytest.raises(ValueError, match="training_species_hash"):
+        checkpoint_training_species(
+            checkpoint,
+            seen_species=["A", "B", "C"],
         )

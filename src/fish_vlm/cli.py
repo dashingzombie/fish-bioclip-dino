@@ -93,6 +93,21 @@ def build_parser() -> argparse.ArgumentParser:
     image_list.add_argument("--missing-image-cache-only", action="store_true")
     sweep = _config_parser(commands, "sweep")
     sweep.add_argument("--dry-run", action="store_true")
+    joint_sweep = commands.add_parser("joint-sweep")
+    joint_sweep.add_argument(
+        "--phase",
+        choices=("loss", "optimiser", "architecture", "training", "all"),
+        default="loss",
+    )
+    joint_sweep.add_argument("--confirm-top", type=int)
+    joint_sweep.add_argument("--submit", action="store_true")
+    joint_sweep.add_argument("--dry-run", action="store_true")
+    joint_sweep.add_argument("--resume", action="store_true")
+    joint_sweep.add_argument("--max-concurrent", type=int, default=8)
+    joint_sweep.add_argument(
+        "--output-root",
+        default="outputs/sweep_pipelines/joint_supervised_text",
+    )
     slurm = _config_parser(commands, "slurm")
     slurm.add_argument("--dry-run", action="store_true")
     run_all_parser = _config_parser(commands, "run-all")
@@ -348,6 +363,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "package-submission":
         output = package_submission(args.submission, args.output)
         print(json.dumps({"output": str(output)}))
+        return 0
+    if args.command == "joint-sweep":
+        from fish_vlm.sweeps.joint import run_joint_sweeps
+
+        result = run_joint_sweeps(
+            phase=args.phase,
+            confirm_top=args.confirm_top,
+            submit=args.submit,
+            dry_run=args.dry_run,
+            max_concurrent=args.max_concurrent,
+            resume=args.resume,
+            output_root=args.output_root,
+        )
+        print(json.dumps(result, sort_keys=True))
         return 0
     config = load_config(args.config)
     if args.command == "list-images":

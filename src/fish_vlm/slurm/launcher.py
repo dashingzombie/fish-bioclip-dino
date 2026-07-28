@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -27,11 +28,12 @@ def launch_slurm(config: dict[str, Any], *, dry_run: bool) -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
 
     is_array = bool(slurm.get("array_configs"))
-    script_name = (
-        "fish-vlm-array.sh"
-        if is_array
-        else "fish-vlm-job.sh"
-    )
+    job_name = re.sub(
+        r"[^A-Za-z0-9_.-]+",
+        "-",
+        str(slurm.get("job_name", "fish-vlm")),
+    ).strip("-") or "fish-vlm"
+    script_name = f"{job_name}-{'array' if is_array else 'job'}.sh"
     script_path = script_dir / script_name
 
     atomic_write_text(script_path, script)

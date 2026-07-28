@@ -7,7 +7,11 @@ from dataclasses import asdict
 import torch
 import torch.nn.functional as F
 
-from fish_vlm.models.fusion import CalibrationParameters, fuse_seen_probabilities, fuse_text_probabilities
+from fish_vlm.models.fusion import (
+    CalibrationParameters,
+    expanded_supervised_probabilities,
+    fuse_text_probabilities,
+)
 from fish_vlm.utils.hashing import stable_json_hash
 from fish_vlm.utils.io import write_json
 
@@ -44,8 +48,10 @@ def fit_calibration(
     bioclip_logits: torch.Tensor,
     targets: torch.Tensor,
     supervised_logits: torch.Tensor | None = None,
+    *,
+    supervised_class_indices: list[int] | torch.Tensor | None = None,
 ) -> CalibrationParameters:
-    """Fit independent temperatures, then probability-space fusion weights."""
+    """Fit temperatures and fusion with an optional subset-trained head."""
     dino_temperature = fit_temperature(dino_logits, targets)
     bioclip_temperature = fit_temperature(bioclip_logits, targets)
     dino_prob = torch.softmax(dino_logits.float() / dino_temperature, -1)
@@ -54,12 +60,65 @@ def fit_calibration(
     supervised_temperature = 1.0
     supervised_weight = 0.7
     if supervised_logits is not None:
-        supervised_temperature = fit_temperature(supervised_logits, targets)
+        class_count = dino_logits.shape[1]
+        if supervised_class_indices is None:
+            if supervised_logits.shape[1] != class_count:
+                raise ValueError(
+                    "Subset-sized supervised logits require supervised_class_indices"
+                )
+            eligible = torch.ones_like(targets, dtype=torch.bool)
+            supervised_targets = targets
+        else:
+            indices = torch.as_tensor(
+                supervised_class_indices,
+                dtype=torch.long,
+                device=targets.device,
+            )
+            if indices.ndim != 1 or indices.numel() != supervised_logits.shape[1]:
+                raise ValueError(
+                    "Supervised class indices must match the supervised-head width"
+                )
+            if indices.unique().numel() != indices.numel():
+                raise ValueError("Supervised class indices contain duplicates")
+            if bool(((indices < 0) | (indices >= class_count)).any()):
+                raise ValueError(
+                    "Supervised class index is outside the text candidate space"
+                )
+            full_to_subset = torch.full(
+                (class_count,),
+                -1,
+                dtype=torch.long,
+                device=targets.device,
+            )
+            full_to_subset[indices] = torch.arange(
+                len(indices),
+                dtype=torch.long,
+                device=targets.device,
+            )
+            supervised_targets = full_to_subset[targets]
+            eligible = supervised_targets >= 0
+            if not bool(eligible.any()):
+                raise ValueError(
+                    "Calibration data contains no targets represented by the supervised head"
+                )
+        supervised_temperature = fit_temperature(
+            supervised_logits[eligible],
+            supervised_targets[eligible],
+        )
         provisional = CalibrationParameters(
-            dino_temperature, bioclip_temperature, supervised_temperature, dino_weight, 0.5
+            dino_temperature,
+            bioclip_temperature,
+            supervised_temperature,
+            dino_weight,
+            0.5,
         )
         text_prob = fuse_text_probabilities(dino_logits, bioclip_logits, provisional)
-        supervised_prob = torch.softmax(supervised_logits.float() / supervised_temperature, -1)
+        supervised_prob = expanded_supervised_probabilities(
+            supervised_logits,
+            supervised_temperature,
+            class_count=class_count,
+            class_indices=supervised_class_indices,
+        )
         supervised_weight = _best_weight(supervised_prob, text_prob, targets)
     return CalibrationParameters(
         dino_temperature, bioclip_temperature, supervised_temperature, dino_weight, supervised_weight
@@ -72,4 +131,3 @@ def save_calibration(path: str, calibration: CalibrationParameters, metadata: di
     value["hash"] = stable_json_hash(value)
     write_json(path, value)
     return value
-

@@ -10,7 +10,10 @@ import torch
 from fish_vlm.config import data_path
 from fish_vlm.data.catalog import split_filenames
 from fish_vlm.models.fusion import CalibrationParameters
-from fish_vlm.training.checkpoint import load_checkpoint
+from fish_vlm.training.checkpoint import (
+    checkpoint_training_species,
+    load_checkpoint,
+)
 from fish_vlm.training.distributed import DistributedContext
 from fish_vlm.training.train import build_runtime, load_candidate_prototypes, make_loader
 from fish_vlm.utils.io import read_json, write_json
@@ -74,6 +77,26 @@ def predict_split(
         raise ValueError(
             "The selected seen inference mode requires a checkpoint trained with the supervised head"
         )
+    supervised_class_indices: list[int] | None = None
+    if mode in {"supervised", "supervised_plus_text"}:
+        supervised_species = checkpoint_training_species(
+            checkpoint,
+            seen_species=bundle.partitions.seen_species,
+        )
+        candidate_to_index = {
+            name: index for index, name in enumerate(species_names)
+        }
+        missing_supervised = sorted(
+            set(supervised_species) - set(candidate_to_index)
+        )
+        if missing_supervised:
+            raise ValueError(
+                "Inference candidate set omits supervised-head species: "
+                f"{missing_supervised}"
+            )
+        supervised_class_indices = [
+            candidate_to_index[name] for name in supervised_species
+        ]
     calibration = load_calibration(calibration_path or config.get("calibration_path"), config)
     filenames = split_filenames(data_path(config, f"{split}_split"))
     context = DistributedContext(0, 1, 0, device)
@@ -88,7 +111,12 @@ def predict_split(
             prototypes,
             batch["bioclip_image"].to(device),
         )
-        probabilities = bundle.model.probabilities(output, mode, calibration)
+        probabilities = bundle.model.probabilities(
+            output,
+            mode,
+            calibration,
+            supervised_class_indices=supervised_class_indices,
+        )
         indices = probabilities.argmax(dim=-1).cpu().tolist()
         predictions.update(
             {filename: species_names[index] for filename, index in zip(batch["filename"], indices, strict=True)}

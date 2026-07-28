@@ -16,3 +16,20 @@ def test_single_job_renderer_uses_slurm_config_and_node_cache() -> None:
     assert 'FISH_VLM_CACHE_DIR="${NODE_TMPDIR}"/fish-vlm-cache' in script
     assert 'cp --archive --reflink=auto "${source_path}"' in script
     assert "--nproc_per_node=4" in script
+
+
+def test_array_renderer_uses_concurrency_and_task_config() -> None:
+    config = load_config("configs/slurm/genome.yaml")
+    config["slurm"]["array_configs"] = [
+        "/work/configs/one.yaml",
+        "/work/configs/two.yaml",
+        "/work/configs/three.yaml",
+    ]
+    config["slurm"]["array_max_concurrent"] = 2
+    script = render_batch_script(config, config["_config_path"])
+
+    assert "#SBATCH --array=0-2%2" in script
+    assert "#SBATCH --output=outputs/slurm/%x-%A_%a.out" in script
+    assert "SWEEP_CONFIGS=(" in script
+    assert "/work/configs/one.yaml" in script
+    assert 'TRAINING_CONFIG="${SWEEP_CONFIGS[${SLURM_ARRAY_TASK_ID}]}"' in script

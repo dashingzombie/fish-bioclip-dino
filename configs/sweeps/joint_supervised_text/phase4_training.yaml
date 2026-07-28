@@ -1,0 +1,23 @@
+defaults: [../../train/joint_supervised_text.yaml]
+
+sweep:
+  name: joint-supervised-text
+  phase: training
+  strategy: cartesian_with_memory_guard
+  target_runs: 18
+  parent_phase: architecture
+  fixed:
+    seed: 42
+    training.validation_interval_steps: 250
+    training.early_stopping_patience_evaluations: 6
+    validation.selection_metric: estimated_overall_accuracy
+  parameters:
+    training.batch_size: [256, 512, 768]
+    training.gradient_accumulation_steps: [1, 2]
+    training.max_steps: [3000, 4000, 6000]
+  memory_safety:
+    max_local_batch_size: 768
+  baseline:
+    training.batch_size: 512
+    training.gradient_accumulation_steps: 1
+    training.max_steps: 4000

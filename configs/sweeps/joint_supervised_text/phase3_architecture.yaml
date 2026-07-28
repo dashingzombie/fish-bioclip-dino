@@ -1,0 +1,27 @@
+defaults: [../../train/joint_supervised_text.yaml]
+
+sweep:
+  name: joint-supervised-text
+  phase: architecture
+  strategy: conditional_pairwise
+  target_runs: 20
+  parent_phase: optimiser
+  fixed:
+    seed: 42
+    training.max_steps: 10000
+    training.validation_interval_steps: 250
+    training.early_stopping_patience_evaluations: 6
+    validation.selection_metric: estimated_overall_accuracy
+  parameters:
+    model.projector.hidden_dim: [1024, 2048, 4096]
+    model.projector.dropout: [0.0, 0.05, 0.1, 0.2, 0.3]
+    model.temperature: [0.03, 0.05, 0.07, 0.1]
+  branch_consistency:
+    enabled: [false, true]
+    weight: [0.01, 0.025, 0.05, 0.1]
+    method: [js]
+  baseline:
+    model.projector.hidden_dim: 2048
+    model.projector.dropout: 0.1
+    model.temperature: 0.07
+    loss.branch_consistency.enabled: false

@@ -1,0 +1,31 @@
+defaults: [../../train/joint_supervised_text.yaml]
+
+sweep:
+  name: joint-supervised-text
+  phase: optimiser
+  strategy: reduced_pairwise
+  target_runs: 15
+  parent_phase: loss
+  fixed:
+    seed: 42
+    training.max_steps: 10000
+    training.validation_interval_steps: 250
+    training.early_stopping_patience_evaluations: 6
+    validation.selection_metric: estimated_overall_accuracy
+  parameters:
+    training.lr: [0.00005, 0.0001, 0.0002, 0.0003, 0.0005]
+    training.weight_decay: [0.0, 0.0001, 0.001, 0.01, 0.05]
+  baseline:
+    training.lr: 0.0001
+    training.weight_decay: 0.01
+  optional_component_multipliers:
+    require_existing_parameter_groups:
+      [projector, dino_last_block, supervised_head]
+    parameters:
+      projector_lr_multiplier: [0.5, 1.0, 2.0]
+      dino_last_block_lr_multiplier: [0.05, 0.1, 0.25]
+      supervised_head_lr_multiplier: [0.5, 1.0, 2.0]
+    baseline:
+      projector_lr_multiplier: 1.0
+      dino_last_block_lr_multiplier: 0.1
+      supervised_head_lr_multiplier: 1.0

@@ -14,7 +14,7 @@ def test_deep_merge_and_base_config_load() -> None:
     assert config["training"]["stage"] == "projection_only"
     assert config["model"]["bioclip"]["checkpoint"] == "hf-hub:imageomics/bioclip-2"
     assert config["training"]["batch_size"] == 512
-    assert config["training"]["max_steps"] == 1200
+    assert config["training"]["max_steps"] == 4000
     assert config["training"]["gradient_accumulation_steps"] == 1
     assert "epochs" not in config["training"]
     assert config["slurm"]["gpus"] == 4

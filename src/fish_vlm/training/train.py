@@ -653,6 +653,7 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                         "canonical_prompt_hash": canonical_prompt_hash,
                         "seen_species": bundle.partitions.seen_species,
                         "unseen_species": bundle.partitions.unseen_species,
+                        "training_species": training_species,
                         "training_species_hash": ordered_names_hash(training_species),
                         "pseudo_unseen_split_hash": split_hash,
                         "active_losses": [

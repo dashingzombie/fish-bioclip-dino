@@ -1,0 +1,15 @@
+defaults: [../../train/joint_supervised_text.yaml]
+
+sweep:
+  name: joint-supervised-text
+  phase: confirmation
+  parent_phase: all
+  seeds: [7, 42, 123]
+  ranking:
+    - mean_estimated_overall_accuracy
+    - mean_seen_unseen_harmonic_mean
+    - worst_seed_estimated_overall_accuracy
+  fixed:
+    training.validation_interval_steps: 250
+    training.early_stopping_patience_evaluations: 6
+    validation.selection_metric: estimated_overall_accuracy

@@ -191,8 +191,11 @@ skip the unused BioCLIP image forward.
 
 `species_holdout` removes complete species from every training loader.
 `genus_holdout` removes complete genera. Seeds 7, 42 and 123 are generated.
-Checkpoints store both the exact training-species hash and pseudo-split hash;
-loaders and checkpoint loading reject leakage or incompatible identities.
+Checkpoints store the exact ordered training-species list, its hash, and the
+pseudo-split hash. Calibration fits the subset supervised head only on eligible
+targets, expands its probabilities into the full seen ordering, and then fuses
+them with full-space text probabilities. Checkpoint loading rejects missing or
+incompatible class identities.
 
 Seen and pseudo-unseen evaluation reports branch accuracy, balanced accuracy,
 macro-F1 and safe top-5. Selection also records:
@@ -265,10 +268,42 @@ raw images; they copy only the exact model, prototype, teacher, and split-cache
 files they consume. Large cache files are copied concurrently with
 `cp --archive --reflink=auto`, and all reads then use node-local storage.
 
-The sweep is phased
-across baseline, projector, objective, learning rate, teacher weight, DINO
-adaptation, supervised head, BioCLIP adapter, inference branch, calibration and
-pseudo-unseen seed. It does not expose official labels.
+The focused joint-supervised-text sweep uses four sequential search phases:
+loss weights, optimizer settings, projector/regularisation, and batch/training
+duration. Search runs always use seed 42, select
+`estimated_overall_accuracy`, validate every 250 optimizer steps, stop after six
+non-improving evaluations, and otherwise run for 10,000 steps except when the
+duration phase explicitly varies `max_steps`.
+
+```bash
+python scripts/run_joint_sweeps.py --phase loss --dry-run
+python scripts/run_joint_sweeps.py --phase loss --submit --max-concurrent 8
+python scripts/run_joint_sweeps.py --phase all --submit --max-concurrent 8
+python scripts/run_joint_sweeps.py --confirm-top 8 --submit --max-concurrent 8
+```
+
+Each phase is one Slurm array with an optional `%N` concurrency limit. Phase
+two inherits the best completed phase-one resolved configuration; later phases
+follow the same rule. Consequently, `--phase all` submits or materialises the
+next ready phase and stops until its metrics exist. Rerun the same command with
+`--resume` to submit only incomplete runs from a previously submitted phase.
+
+The deterministic reduced grids contain 30 loss runs, 15 optimizer runs, 20
+architecture/consistency runs, and 18 batch/duration runs. The current
+optimizer has independent absolute learning rates for the projector and final
+DINO block, but not the supervised head, so the optional three-component
+multiplier sweep remains disabled rather than changing optimizer behaviour for
+the sweep.
+
+Every run receives its own output directory containing `resolved_config.yaml`,
+`metrics/best.json`, and `checkpoints/best.pt`. The shared
+`run_index.json` records parameters, status, array task, job ID, score, best
+step, and paths. W&B names contain every varied parameter, while
+`sweep_metadata` records local/effective global batch sizes and the actual
+component learning rates. After search, confirmation repeats the top eight
+configurations at seeds 7, 42, and 123 and ranks complete triples by mean
+estimated overall accuracy, mean harmonic mean, then worst-seed overall
+accuracy.
 
 ## W&B result layout
 

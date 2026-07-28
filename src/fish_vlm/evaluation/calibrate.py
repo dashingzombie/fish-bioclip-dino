@@ -10,7 +10,10 @@ import torch
 from fish_vlm.config import data_path
 from fish_vlm.data.catalog import load_labels, split_filenames
 from fish_vlm.evaluation.calibration import fit_calibration, save_calibration
-from fish_vlm.training.checkpoint import load_checkpoint
+from fish_vlm.training.checkpoint import (
+    checkpoint_training_species,
+    load_checkpoint,
+)
 from fish_vlm.training.distributed import DistributedContext
 from fish_vlm.training.train import (
     _data_processed_path,
@@ -45,6 +48,22 @@ def calibrate_checkpoint(
         ),
         strict=False,
     )
+    supervised_species = checkpoint_training_species(
+        checkpoint,
+        seen_species=bundle.partitions.seen_species,
+    )
+    species_to_index = {
+        name: index for index, name in enumerate(species_names)
+    }
+    missing_supervised = sorted(set(supervised_species) - set(species_to_index))
+    if missing_supervised:
+        raise ValueError(
+            "Calibration candidate set omits supervised-head species: "
+            f"{missing_supervised}"
+        )
+    supervised_class_indices = [
+        species_to_index[name] for name in supervised_species
+    ]
     labels = load_labels(config)
     _, validation_names = _split_labelled_filenames(
         split_filenames(data_path(config, "train_split")),
@@ -82,6 +101,9 @@ def calibrate_checkpoint(
         torch.cat(bioclip),
         torch.cat(targets),
         torch.cat(supervised) if supervised else None,
+        supervised_class_indices=(
+            supervised_class_indices if supervised else None
+        ),
     )
     return save_calibration(
         str(output_path),
@@ -90,6 +112,7 @@ def calibrate_checkpoint(
             "checkpoint": str(checkpoint_path),
             "checkpoint_step": checkpoint["step"],
             "species_names": species_names,
+            "supervised_species": supervised_species,
             "text_prototype_hash": cache["prompt_hash"],
         },
     )

@@ -16,7 +16,7 @@ from fish_vlm.utils.io import torch_save_atomic
 REQUIRED_METADATA = {
     "dino_model_name", "dino_checkpoint_source", "bioclip_checkpoint",
     "text_prototype_hash", "canonical_prompt_hash", "seen_species",
-    "unseen_species", "training_species_hash", "active_losses",
+    "unseen_species", "training_species", "training_species_hash", "active_losses",
 }
 
 
@@ -70,6 +70,16 @@ def load_checkpoint(
 ) -> dict[str, Any]:
     """Validate class/prototype/training identities before loading weights."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    missing = REQUIRED_METADATA - set(checkpoint)
+    if missing:
+        raise ValueError(
+            "Checkpoint uses an unsupported metadata schema; missing fields: "
+            f"{sorted(missing)}"
+        )
+    checkpoint_training_species(
+        checkpoint,
+        seen_species=expected_seen_species,
+    )
     expected = {
         "seen_species": expected_seen_species,
         "unseen_species": expected_unseen_species,
@@ -86,3 +96,31 @@ def load_checkpoint(
         raise ValueError(f"Incompatible checkpoint: {mismatches}")
     model.load_state_dict(checkpoint["model_state"], strict=strict)
     return checkpoint
+
+
+def checkpoint_training_species(
+    checkpoint: dict[str, Any],
+    *,
+    seen_species: list[str],
+) -> list[str]:
+    """Return the checkpoint's strict ordered supervised-head label space."""
+    value = checkpoint.get("training_species")
+    if not isinstance(value, list) or not value or not all(
+        isinstance(name, str) for name in value
+    ):
+        raise ValueError(
+            "Checkpoint lacks a valid ordered training_species list; "
+            "regenerate it with the current training code"
+        )
+    names = list(value)
+    if len(names) != len(set(names)):
+        raise ValueError("Checkpoint training_species contains duplicates")
+    unknown = sorted(set(names) - set(seen_species))
+    if unknown:
+        raise ValueError(
+            f"Checkpoint training_species contains unknown seen species: {unknown}"
+        )
+    expected_hash = ordered_names_hash(names)
+    if checkpoint.get("training_species_hash") != expected_hash:
+        raise ValueError("Checkpoint training_species_hash does not match its class list")
+    return names

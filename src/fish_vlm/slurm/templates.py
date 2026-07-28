@@ -191,6 +191,12 @@ def render_batch_script(config: dict[str, Any], training_config: str) -> str:
     """Render a one-node, all-GPU torchrun job."""
     slurm = config["slurm"]
     gpus = int(slurm.get("gpus", 1))
+    array_configs = [
+        str(path) for path in slurm.get("array_configs", [])
+    ]
+    max_concurrent = int(slurm.get("array_max_concurrent", 0))
+    if max_concurrent < 0:
+        raise ValueError("slurm.array_max_concurrent cannot be negative")
     lines = [
         "#!/usr/bin/env bash",
         f"#SBATCH --job-name={slurm.get('job_name', 'fish-vlm')}",
@@ -200,12 +206,18 @@ def render_batch_script(config: dict[str, Any], training_config: str) -> str:
         f"#SBATCH --mem={slurm.get('memory', '64G')}",
         f"#SBATCH --time={slurm.get('time_limit', '24:00:00')}",
     ]
+    if array_configs:
+        concurrency = f"%{max_concurrent}" if max_concurrent else ""
+        lines.append(
+            f"#SBATCH --array=0-{len(array_configs) - 1}{concurrency}"
+        )
     _append_optional_directives(lines, slurm)
     log_dir = slurm.get("log_dir", "outputs/slurm")
+    log_suffix = "%A_%a" if array_configs else "%j"
     lines.extend(
         [
-            f"#SBATCH --output={log_dir}/%x-%j.out",
-            f"#SBATCH --error={log_dir}/%x-%j.err",
+            f"#SBATCH --output={log_dir}/%x-{log_suffix}.out",
+            f"#SBATCH --error={log_dir}/%x-{log_suffix}.err",
         ]
     )
     _append_runtime_setup(
@@ -214,12 +226,20 @@ def render_batch_script(config: dict[str, Any], training_config: str) -> str:
         cache_scope="training",
         stage_images=False,
     )
-    lines.extend(
-        [
-            f"TRAINING_CONFIG={shlex.quote(training_config)}",
-            f'torchrun --standalone --nproc_per_node={gpus} '
-            f'-m fish_vlm.cli train --config "$TRAINING_CONFIG"',
-        ]
+    if array_configs:
+        lines.extend(
+            [
+                "SWEEP_CONFIGS=(",
+                *(f"    {shlex.quote(path)}" for path in array_configs),
+                ")",
+                'TRAINING_CONFIG="${SWEEP_CONFIGS[${SLURM_ARRAY_TASK_ID}]}"',
+            ]
+        )
+    else:
+        lines.append(f"TRAINING_CONFIG={shlex.quote(training_config)}")
+    lines.append(
+        f'torchrun --standalone --nproc_per_node={gpus} '
+        f'-m fish_vlm.cli train --config "$TRAINING_CONFIG"'
     )
     return "\n".join(lines) + "\n"
 
