@@ -20,6 +20,8 @@ class EarlyStopping:
         if improved:
             self.best = value
             self.bad_evaluations = 0
+            print(f"Early stopping: improved to {self.best:.5f}, resetting bad evaluations")
         else:
             self.bad_evaluations += 1
+            print(f"Early stopping: {self.bad_evaluations}/{self.patience} bad evaluations")
         return improved, self.bad_evaluations >= self.patience
