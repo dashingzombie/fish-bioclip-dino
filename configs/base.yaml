@@ -26,8 +26,16 @@ text:
   exclude_nonvisual_sentences: true
   fail_on_missing_prompt: true
   max_tokens: 220
+  prototype_ensemble:
+    enabled: false
+    weights:
+      morphology_only: 0.5
+      taxonomic_hierarchy: 0.5
 
 model:
+  backbone: dino_bioclip
+  tuning_mode: frozen
+  unfreeze_last_blocks: 0
   dino:
     name: dinov3_vitb16
     pretrained: true
@@ -54,6 +62,18 @@ model:
       enabled: false
       hidden_dim: 512
       dropout: 0.1
+    text_space: native
+  bioclip_classifier:
+    enabled: false
+    type: cosine
+    initial_scale: 20.0
+    feature_space: native
+
+optimiser:
+  backbone_lr: 1.0e-6
+  classifier_lr: 1.0e-4
+  adapter_lr: 1.0e-4
+  backbone_weight_decay: 0.01
 
 training:
   stage: projection_only
@@ -87,6 +107,10 @@ loss:
   dino_text_classification:
     enabled: true
     weight: 1.0
+    hard_negatives:
+      enabled: false
+      strategy: same_genus
+      top_k: 5
   bioclip_image_teacher:
     enabled: true
     weight: 0.25
@@ -98,6 +122,22 @@ loss:
   native_bioclip_text:
     enabled: false
     weight: 1.0
+  bioclip_supervised_species:
+    enabled: false
+    weight: 1.0
+  bioclip_pretrained_distillation:
+    enabled: false
+    weight: 0.5
+  representation_distillation:
+    enabled: false
+    weight: 0.5
+    checkpoint: outputs/checkpoints/best-stage2.pt
+  genus_supervised:
+    enabled: false
+    weight: 0.1
+  family_supervised:
+    enabled: false
+    weight: 0.05
   branch_consistency:
     enabled: false
     weight: 0.05
@@ -131,6 +171,11 @@ inference:
 fusion:
   dino_text_weight: 0.5
   supervised_weight: 0.7
+  calibration_gamma: 0.0
+
+calibration:
+  species_disjoint: true
+  gamma_values: [0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
 
 wandb:
   enabled: true

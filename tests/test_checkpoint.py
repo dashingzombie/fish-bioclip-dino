@@ -42,18 +42,70 @@ def test_checkpoint_round_trip_and_order_rejection(tmp_path: Path) -> None:
         path, model=model, optimizer=None, scheduler=None, scaler=None, step=300,
         best_metric=0.75, config={"seed": 1}, metadata=metadata,
     )
+    restored = _model()
+    with torch.no_grad():
+        for parameter in restored.projector.parameters():
+            parameter.zero_()
     loaded = load_checkpoint(
-        path, _model(), expected_seen_species=["A", "B"], expected_unseen_species=["C"],
+        path, restored, expected_seen_species=["A", "B"], expected_unseen_species=["C"],
         expected_text_prototype_hash="prompts",
         expected_training_species_hash=ordered_names_hash(["A", "B"]),
+        expected_dino_model_name="tiny",
+        expected_dino_checkpoint_source="mock",
+        expected_bioclip_checkpoint="mock",
     )
     assert loaded["step"] == 300
+    for key, value in model.projector.state_dict().items():
+        assert torch.equal(restored.projector.state_dict()[key], value)
     assert checkpoint_training_species(
         loaded, seen_species=["A", "B"]
     ) == ["A", "B"]
     with pytest.raises(ValueError, match="Incompatible"):
         load_checkpoint(
             path, _model(), expected_seen_species=["B", "A"], expected_unseen_species=["C"],
+            expected_text_prototype_hash="prompts",
+        )
+
+
+def test_checkpoint_rejects_conflicting_projector_snapshot(
+    tmp_path: Path,
+) -> None:
+    model = _model()
+    path = tmp_path / "checkpoint.pt"
+    metadata = {
+        "dino_model_name": "tiny",
+        "dino_checkpoint_source": "mock",
+        "bioclip_checkpoint": "mock",
+        "text_prototype_hash": "prompts",
+        "canonical_prompt_hash": "all-prompts",
+        "seen_species": ["A"],
+        "unseen_species": ["B"],
+        "training_species": ["A"],
+        "training_species_hash": ordered_names_hash(["A"]),
+        "active_losses": ["dino_text_classification"],
+    }
+    payload = save_checkpoint(
+        path,
+        model=model,
+        optimizer=None,
+        scheduler=None,
+        scaler=None,
+        step=1,
+        best_metric=0.1,
+        config={},
+        metadata=metadata,
+    )
+    first_key = next(iter(payload["projector_state"]))
+    payload["projector_state"][first_key] = (
+        payload["projector_state"][first_key] + 1
+    )
+    torch.save(payload, path)
+    with pytest.raises(ValueError, match="conflicts"):
+        load_checkpoint(
+            path,
+            _model(),
+            expected_seen_species=["A"],
+            expected_unseen_species=["B"],
             expected_text_prototype_hash="prompts",
         )
 

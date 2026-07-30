@@ -1,10 +1,11 @@
 # Fish DINOv3–BioCLIP
 
-Production-oriented seen/unseen fish classification by aligning DINOv3 image
-features with the frozen BioCLIP embedding space. The same canonical text
-prototype matrix is used by the projected DINO branch and by BioCLIP's own
-frozen image encoder. Their calibrated probabilities can be fused, and seen
-classification may additionally use a supervised cosine head.
+Production-oriented seen/unseen fish classification with projected DINOv3 and
+native BioCLIP 2 branches. BioCLIP supports training-free zero-shot inference,
+a seen-only linear probe, an adapter, one-block partial image-encoder tuning,
+and explicit full image-encoder fine-tuning. Their calibrated probabilities can
+be fused, while purpose-specific checkpoints are selected independently for
+seen, unseen, and joint prediction.
 
 The implementation never assumes official `test.pkl` or `unseen.pkl` labels.
 Unseen classes enter training artifacts only as text: one supplied description,
@@ -19,8 +20,9 @@ SLURM workflow without submitting jobs:
 make everything-dry-run
 ```
 
-Submit preparation, training, calibration/inference/submission, all four sweep
-phases, top-eight multi-seed confirmation, and the final report:
+Submit preparation, the ordered baseline and ablation stages,
+calibration/inference/submission, all four sweep phases, top-eight multi-seed
+confirmation, and the final report:
 
 ```bash
 make everything MAX_CONCURRENT=8
@@ -32,10 +34,10 @@ Resume the same run without resubmitting completed work:
 make everything-resume MAX_CONCURRENT=8
 ```
 
-The bootstrap workflow creates six jobs connected by `afterok`: preparation,
-four training jobs, and finalisation. Preparation builds deterministic caches
-and copies them back to persistent cache storage before the node-local working
-directory disappears. Each training stage writes a deterministic
+The bootstrap workflow creates 16 jobs connected by `afterok`: preparation,
+14 ordered training jobs, and finalisation. Preparation builds deterministic
+caches and copies them back to persistent cache storage before the node-local
+working directory disappears. Each training stage writes a deterministic
 `submission.zip` below `outputs/submissions/stages/<stage>/`. A failed job
 prevents dependent jobs and sweeps from using partial outputs.
 
@@ -90,6 +92,12 @@ unseen splits. Every builder validates its destination before model loading. A
 valid cache is reused; an incompatible cache fails instead of being overwritten.
 Model downloads are kept below `cache/` through `HF_HOME` and `TORCH_HOME`.
 
+Text-prototype caches use schema version 2. They store fixed tokenizer tokens
+and text-encoder embeddings in addition to the prompt and checkpoint identity.
+Inference reproduces both probes with the live BioCLIP 2 tokenizer and text
+encoder. A legacy or changed cache is rejected and must be archived before
+building a replacement.
+
 The teacher cache reads only filenames from `train.pkl`, requires labels for
 every included image, uses the deterministic BioCLIP evaluation transform, and
 stores float16 embeddings converted to float32 for losses. Unit tests substitute
@@ -121,33 +129,50 @@ BioCLIP transforms. A DINO-normalised tensor is never reused by BioCLIP.
 
 ## Stages and training
 
-Stage 0 is a native BioCLIP zero-shot evaluation:
+The training-free BioCLIP 2 evaluation reports seen and pseudo-unseen results
+for scientific name, taxonomic hierarchy, morphology-only,
+morphology-plus-taxonomy, and full-description prompts:
 
 ```bash
-python -m fish_vlm.cli evaluate --config configs/base.yaml
+make evaluate-zero-shot
 ```
 
-Stages 1–4:
+Evaluate the three existing DINO checkpoints independently and write the
+purpose-specific selection report:
 
 ```bash
-torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
-  --config configs/train/projection_only.yaml
-
-torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
-  --config configs/train/final_block.yaml
-
-torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
-  --config configs/train/joint_supervised_text.yaml
-
-torchrun --standalone --nproc_per_node=4 -m fish_vlm.cli train \
-  --config configs/train/bioclip_adapter.yaml
+make evaluate-stages
 ```
 
-The later stage configurations specify `training.resume_checkpoint`; adjust
-that path after retaining the preceding stage's best checkpoint. Stage 1 trains
-only the projector and logit scale. Stage 2 additionally trains the final DINO
-block and final normalisation at separate rates. Stage 3 adds the supervised
-head. Stage 4 trains only the residual BioCLIP adapter.
+The comparison includes `best-stage1.pt`, `best-stage2.pt`, and `best.pt`;
+records seen, pseudo-unseen, harmonic-mean, text-retrieval, genus, and family
+accuracy; and chooses separate seen, unseen, and joint checkpoints. Inference
+and calibration accept `--selection-report` and `--purpose`.
+
+After all baselines finish, `make select-models` compares every model family,
+including each training-free prompt condition, and writes
+`outputs/metrics/model_selection.json`. Seen selection uses seen accuracy,
+unseen selection uses pseudo-unseen accuracy, and joint selection uses their
+harmonic mean; the final workflow consumes these three choices independently.
+
+The remaining model baselines have direct targets:
+
+```bash
+make train-bioclip-linear
+make train-bioclip-adapter
+make train-bioclip-partial
+make train-alignment-preserving
+make train-bioclip-full
+```
+
+The linear classifier is used only for seen prediction. Its unseen path uses
+the unmodified native BioCLIP embedding. Partial tuning initially unfreezes one
+final visual block and uses supervised, image-text, and pretrained-embedding
+distillation losses with separate backbone and head learning rates. Full
+BioCLIP image-encoder tuning is explicit and remains the final ablation.
+`make train-alignment-final-block` is intentionally excluded from the automatic
+sequence; run it only after the frozen alignment-preserving result confirms
+stable pseudo-unseen performance.
 
 The exact implemented objective is a non-normalised weighted sum of enabled
 terms:
@@ -156,20 +181,26 @@ terms:
 - cosine (`1 - cosine`) or optional symmetric batch-contrastive image-teacher
   alignment;
 - ordinary supervised seen-head cross-entropy;
-- BioCLIP-adapter prototype cross-entropy;
+- native or adapter BioCLIP prototype cross-entropy;
+- BioCLIP linear-classifier cross-entropy;
+- pretrained BioCLIP embedding distillation;
+- DINO representation distillation from `best-stage2.pt`;
+- genus and family supervision;
+- one controlled hard-negative strategy;
 - optional symmetric KL or Jensen–Shannon branch consistency.
 
-Defaults are `1.0 * DINO text CE + 0.25 * cosine teacher`; joint training adds
-`0.5 * supervised CE`. Similarities, normalisation, softmax/KL and
-log-sum-exp-sensitive work are float32 even under AMP. BioCLIP parameters have
-`requires_grad=False` and cannot enter AdamW groups.
+Defaults are `1.0 * DINO text CE + 0.25 * cosine teacher`. The
+alignment-preserving joint configuration starts with species `0.5`, text
+`1.0`, distillation `0.5`, genus `0.1`, and family `0.05`. Similarities,
+normalisation, softmax/KL and log-sum-exp-sensitive work are float32 even under
+AMP. BioCLIP stays frozen except in the explicit partial/full tuning stages.
 
-Training is step-based: the four stages use 1200, 800, 800, and 600 optimizer
-steps, with validation every 100 steps. The Genome profile targets one complete
-`gpu-h200` node: four Hopper GPUs, 128 CPU cores, and 700 GB RAM. It uses BF16,
-a 512-image microbatch per GPU, no gradient accumulation, static-graph DDP,
-gradient bucket views, TF32, and fixed-shape cuDNN benchmarking. The global
-training batch is 2048 images per optimizer step.
+Training is step-based and each stage controls its own maximum steps and
+validation interval. The Genome profile targets one complete `gpu-h200` node:
+four Hopper GPUs, 128 CPU cores, and 700 GB RAM. It uses BF16, a 512-image
+microbatch per GPU, no gradient accumulation, static-graph DDP, gradient bucket
+views, TF32, and fixed-shape cuDNN benchmarking. The global training batch is
+2048 images per optimizer step.
 
 FSDP is intentionally not used. DINO and BioCLIP are frozen for most stages and
 the complete model fits easily on each GPU; sharding would add parameter
@@ -203,10 +234,12 @@ splits are used only for their actual counts, never for labels or selection.
 
 ## Calibration, inference, and submission
 
-Independent validation temperatures are fitted for DINO-text,
-BioCLIP-native, and (when present) the supervised head. Grid-selected convex
-weights then combine probabilities—not unrelated raw logits. Calibration JSON
-contains its own content hash.
+Independent validation temperatures are fitted for DINO-text, BioCLIP-native,
+and the applicable supervised head. Grid-selected convex weights combine
+probabilities—not unrelated raw logits. DINO/BioCLIP fusion weights and the
+seen-class penalty `calibration_gamma` are selected only on the configured
+species-disjoint validation split. Calibration JSON contains its own content
+hash.
 
 ```bash
 python -m fish_vlm.cli calibrate --config configs/base.yaml \
@@ -234,6 +267,38 @@ Seen mode defaults to supervised-plus-text. Unseen mode restricts candidates to
 unseen prototypes and defaults to fused text; supervised modes are rejected.
 Generalised all-class inference exists in `configs/inference/generalised.yaml`
 and is opt-in.
+
+Prompt ensembles and hard negatives are separate controlled ablations under
+`configs/ablations/`. The workflow runs same-genus, same-family, text-similar,
+and visually similar negatives one at a time, followed by equal multi-prompt
+averaging and weighted morphology/taxonomy prototypes.
+
+## Required unseen-inference gate
+
+Before training or interpreting a new architecture, validate the existing
+checkpoint against the exact organiser data, class partitions, BioCLIP 2 text
+cache, and runtime model identities:
+
+```bash
+make verify-unseen-inference \
+  CHECKPOINT=outputs/checkpoints/best.pt
+```
+
+The command writes `outputs/metrics/unseen_inference_audit.json`. It fails on a
+stale candidate partition or ordering map, a tokenizer/text-encoder mismatch,
+an incompatible checkpoint, missing or conflicting projector weights, score
+column/label drift, or any constructed seen classifier in unseen-only mode. The
+report includes the ordered unseen species, their ordering hash, and:
+
+```text
+random_accuracy = 1 / number_of_candidate_species
+```
+
+Similarity logits now always derive from:
+
+```python
+scores = normalise(image_embeddings) @ normalise(text_embeddings).T
+```
 
 ## DDP, SLURM, sweeps, and tests
 
@@ -301,7 +366,9 @@ step, and paths. W&B names contain every varied parameter, while
 component learning rates. After search, confirmation repeats the top eight
 configurations at seeds 7, 42, and 123 and ranks complete triples by mean
 estimated overall accuracy, mean harmonic mean, then worst-seed overall
-accuracy.
+accuracy. Confirmation varies the optimisation seed while fixing
+`validation.pseudo_unseen.split_seed: 42`, so every run uses the compatible
+stage-2 parent and the same species-disjoint benchmark.
 
 ## W&B result layout
 
@@ -327,7 +394,9 @@ from W&B config. Checkpoints and model artifacts are never uploaded.
   timm DINOv3 and Hugging Face BioCLIP artifacts.
 - DINO architecture support for `final_block` requires a timm model exposing
   `blocks`, `stages`, or `layers`, plus `norm` or `fc_norm` when present.
-- The initial implementation deliberately does not fine-tune BioCLIP itself,
-  sample random prompt bags, or use official image-only labels.
+- Full fine-tuning affects the BioCLIP image encoder only; the pretrained text
+  encoder remains fixed so prototype identity stays auditable.
+- Prompt ensembles are deterministic; random prompt bags and official
+  image-only labels are not used.
 - Multi-node DDP is outside scope; the launcher targets one node and a
   configurable GPU count.

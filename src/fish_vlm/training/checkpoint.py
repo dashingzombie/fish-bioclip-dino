@@ -42,6 +42,7 @@ def save_checkpoint(
         "projector_state": model.projector.state_dict(),
         "supervised_head_state": None if model.supervised_head is None else model.supervised_head.state_dict(),
         "bioclip_adapter_state": None if model.bioclip_adapter is None else model.bioclip_adapter.state_dict(),
+        "bioclip_classifier_state": None if model.bioclip_classifier is None else model.bioclip_classifier.state_dict(),
         "optimizer_state": None if optimizer is None else optimizer.state_dict(),
         "scheduler_state": None if scheduler is None else scheduler.state_dict(),
         "gradient_scaler_state": None if scaler is None else scaler.state_dict(),
@@ -66,6 +67,9 @@ def load_checkpoint(
     expected_text_prototype_hash: str | None,
     expected_canonical_prompt_hash: str | None = None,
     expected_training_species_hash: str | None = None,
+    expected_dino_model_name: str | None = None,
+    expected_dino_checkpoint_source: str | None = None,
+    expected_bioclip_checkpoint: str | None = None,
     strict: bool = True,
 ) -> dict[str, Any]:
     """Validate class/prototype/training identities before loading weights."""
@@ -91,10 +95,67 @@ def load_checkpoint(
         expected["canonical_prompt_hash"] = expected_canonical_prompt_hash
     if expected_training_species_hash is not None:
         expected["training_species_hash"] = expected_training_species_hash
+    if expected_dino_model_name is not None:
+        expected["dino_model_name"] = expected_dino_model_name
+    if expected_dino_checkpoint_source is not None:
+        expected["dino_checkpoint_source"] = expected_dino_checkpoint_source
+    if expected_bioclip_checkpoint is not None:
+        expected["bioclip_checkpoint"] = expected_bioclip_checkpoint
     mismatches = {key: (checkpoint.get(key), value) for key, value in expected.items() if checkpoint.get(key) != value}
     if mismatches:
         raise ValueError(f"Incompatible checkpoint: {mismatches}")
-    model.load_state_dict(checkpoint["model_state"], strict=strict)
+    model_state = checkpoint.get("model_state")
+    projector_state = checkpoint.get("projector_state")
+    if not isinstance(model_state, dict):
+        raise ValueError("Checkpoint model_state is missing or invalid")
+    if not isinstance(projector_state, dict) or not projector_state:
+        raise ValueError("Checkpoint projector_state is missing or invalid")
+    embedded_projector = {
+        key.removeprefix("projector."): value
+        for key, value in model_state.items()
+        if key.startswith("projector.")
+    }
+    if set(embedded_projector) != set(projector_state):
+        raise ValueError(
+            "Checkpoint projector_state does not match model_state keys"
+        )
+    inconsistent_projector = [
+        key
+        for key in projector_state
+        if not torch.equal(embedded_projector[key], projector_state[key])
+    ]
+    if inconsistent_projector:
+        raise ValueError(
+            "Checkpoint projector_state conflicts with model_state: "
+            f"{inconsistent_projector}"
+        )
+    incompatible = model.load_state_dict(model_state, strict=strict)
+    if not strict:
+        required_prefixes = ("dino.", "projector.", "logit_scale.")
+        missing_core = [
+            key
+            for key in incompatible.missing_keys
+            if key.startswith(required_prefixes)
+        ]
+        if missing_core:
+            raise ValueError(
+                f"Checkpoint is missing core model weights: {missing_core}"
+            )
+    loaded_projector = model.projector.state_dict()
+    failed_to_load = [
+        key
+        for key in projector_state
+        if key not in loaded_projector
+        or not torch.equal(
+            loaded_projector[key].detach().cpu(),
+            projector_state[key].detach().cpu(),
+        )
+    ]
+    if failed_to_load:
+        raise RuntimeError(
+            "Projection-head weights were not restored from the checkpoint: "
+            f"{failed_to_load}"
+        )
     return checkpoint
 
 

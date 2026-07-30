@@ -1,0 +1,32 @@
+defaults: [../base.yaml]
+training:
+  stage: bioclip_linear_probe
+  checkpoint_name: best-bioclip-linear.pt
+  metrics_name: bioclip-linear.json
+  max_steps: 3000
+  lr: 1.0e-4
+  weight_decay: 0.01
+model:
+  backbone: bioclip2
+  tuning_mode: linear_probe
+  unfreeze_last_blocks: 0
+  dino:
+    trainable_scope: frozen
+  bioclip_image_path:
+    enabled: true
+    mode: frozen_zero_shot
+    text_space: native
+  bioclip_classifier:
+    enabled: true
+    feature_space: native
+loss:
+  dino_text_classification: {enabled: false, weight: 1.0}
+  bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: false, weight: 0.5}
+  native_bioclip_text: {enabled: false, weight: 1.0}
+  bioclip_supervised_species: {enabled: true, weight: 1.0}
+  bioclip_pretrained_distillation: {enabled: false, weight: 0.5}
+validation:
+  selection_branch: bioclip_supervised_plus_text
+  unseen_selection_branch: bioclip_native
+  selection_metric: seen_unseen_harmonic_mean

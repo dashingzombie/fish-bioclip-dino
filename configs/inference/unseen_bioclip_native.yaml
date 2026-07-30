@@ -8,11 +8,10 @@ inference:
     candidate_set: unseen
     mode: bioclip_native
 model:
+  backbone: bioclip2
+  bioclip_classifier:
+    enabled: false
   bioclip_image_path:
     enabled: true
-    mode: adapter
-    text_space: adapter
-    adapter:
-      enabled: true
-      hidden_dim: 512
-      dropout: 0.1
+    mode: frozen_zero_shot
+    text_space: native

@@ -7,8 +7,11 @@ PIPELINE_CONFIG ?= configs/pipeline.yaml
 SWEEP_OUTPUT ?= outputs/sweep_pipelines/joint_supervised_text
 
 .PHONY: install test prepare-prompts build-text-prototypes build-image-cache build-teacher-cache \
-	pseudo-unseen train evaluate-zero-shot evaluate calibrate infer-test infer-unseen \
-	submission validate-submission slurm-dry-run slurm-submit \
+	pseudo-unseen train evaluate-zero-shot evaluate evaluate-stages calibrate infer-test infer-unseen \
+	select-models \
+	train-bioclip-linear train-bioclip-adapter train-bioclip-partial train-alignment-preserving \
+	train-alignment-final-block train-bioclip-full \
+	verify-unseen-inference submission validate-submission slurm-dry-run slurm-submit \
 	everything everything-dry-run everything-resume
 
 install:
@@ -35,11 +38,39 @@ pseudo-unseen:
 train:
 	torchrun --standalone --nproc_per_node=$(GPUS) -m fish_vlm.cli train --config $(CONFIG)
 
+train-bioclip-linear:
+	$(MAKE) train CONFIG=configs/train/bioclip_linear_probe.yaml
+
+train-bioclip-adapter:
+	$(MAKE) train CONFIG=configs/train/bioclip_adapter.yaml
+
+train-bioclip-partial:
+	$(MAKE) train CONFIG=configs/train/bioclip_partial_finetune.yaml
+
+train-alignment-preserving:
+	$(MAKE) train CONFIG=configs/train/joint_alignment_preserving.yaml
+
+train-alignment-final-block:
+	$(MAKE) train CONFIG=configs/train/joint_alignment_final_block.yaml
+
+train-bioclip-full:
+	$(MAKE) train CONFIG=configs/train/bioclip_full_finetune.yaml
+
 evaluate-zero-shot:
 	$(PYTHON) -m fish_vlm.cli evaluate --config $(CONFIG)
 
 evaluate:
 	$(PYTHON) -m fish_vlm.cli evaluate --config $(CONFIG) --checkpoint $(CHECKPOINT)
+
+evaluate-stages:
+	$(PYTHON) -m fish_vlm.cli evaluate-stages \
+		--config $(PIPELINE_CONFIG) \
+		--output outputs/metrics/stage_comparison.json
+
+select-models:
+	$(PYTHON) -m fish_vlm.cli select-models \
+		--config $(PIPELINE_CONFIG) \
+		--output outputs/metrics/model_selection.json
 
 calibrate:
 	$(PYTHON) -m fish_vlm.cli calibrate --config $(CONFIG) --checkpoint $(CHECKPOINT)
@@ -51,6 +82,10 @@ infer-test:
 infer-unseen:
 	$(PYTHON) -m fish_vlm.cli infer --config configs/inference/unseen.yaml \
 		--checkpoint $(CHECKPOINT) --output outputs/predictions/unseen.json
+
+verify-unseen-inference:
+	$(PYTHON) -m fish_vlm.cli verify-unseen-inference \
+		--config configs/inference/unseen.yaml --checkpoint $(CHECKPOINT)
 
 submission:
 	$(PYTHON) -m fish_vlm.cli merge-submission \

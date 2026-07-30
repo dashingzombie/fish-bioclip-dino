@@ -1,0 +1,10 @@
+defaults: [../train/projection_only.yaml]
+training:
+  checkpoint_name: best-weighted-prototype.pt
+  metrics_name: weighted-prototype.json
+text:
+  prototype_ensemble:
+    enabled: true
+    weights:
+      morphology_only: 0.7
+      taxonomic_hierarchy: 0.3

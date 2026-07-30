@@ -1,0 +1,38 @@
+defaults: [../base.yaml]
+training:
+  stage: bioclip_partial_finetune
+  checkpoint_name: best-bioclip-partial.pt
+  metrics_name: bioclip-partial.json
+  max_steps: 4000
+  lr: 1.0e-4
+  weight_decay: 0.01
+model:
+  backbone: bioclip2
+  tuning_mode: partial_finetune
+  unfreeze_last_blocks: 1
+  dino:
+    trainable_scope: frozen
+  bioclip:
+    freeze_text_encoder: true
+    freeze_image_encoder: false
+  bioclip_image_path:
+    enabled: true
+    mode: frozen_zero_shot
+    text_space: native
+  bioclip_classifier:
+    enabled: true
+    feature_space: native
+optimiser:
+  backbone_lr: 1.0e-6
+  classifier_lr: 1.0e-4
+  adapter_lr: 1.0e-4
+loss:
+  dino_text_classification: {enabled: false, weight: 1.0}
+  bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: false, weight: 0.5}
+  native_bioclip_text: {enabled: true, weight: 1.0}
+  bioclip_supervised_species: {enabled: true, weight: 0.5}
+  bioclip_pretrained_distillation: {enabled: true, weight: 0.5}
+validation:
+  selection_branch: bioclip_supervised_plus_text
+  selection_metric: seen_unseen_harmonic_mean

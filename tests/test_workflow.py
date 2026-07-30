@@ -22,11 +22,22 @@ def test_bootstrap_contains_complete_ordered_pipeline() -> None:
         "build_image_cache",
         "build_teacher_cache",
     ]
+    assert names[5] == "evaluate_bioclip_zero_shot"
+    assert names.index("joint_supervised_text") < names.index(
+        "verify_unseen_inference"
+    )
+    assert names.index("verify_unseen_inference") < names.index(
+        "bioclip_linear_probe"
+    )
     for stage in (
         "projection_only",
         "final_block",
         "joint_supervised_text",
+        "bioclip_linear_probe",
         "bioclip_adapter",
+        "bioclip_partial_finetune",
+        "joint_alignment_preserving",
+        "bioclip_full_finetune",
     ):
         assert stage in names
         assert f"{stage}_package_submission" in names
@@ -51,7 +62,7 @@ def test_slurm_dry_run_never_calls_sbatch(monkeypatch) -> None:
     monkeypatch.setattr(subprocess, "run", forbidden)
     result = submit_bootstrap_pipeline(config, dry_run=True, gpus=3)
     assert result["dry_run"] is True
-    assert len(result["jobs"]) == 6
+    assert len(result["jobs"]) == 16
     assert result["jobs"][0]["depends_on"] is None
     assert result["jobs"][1]["depends_on"] == "preparation"
     assert result["jobs"][1]["gpus"] == 3
@@ -85,7 +96,7 @@ def test_slurm_submission_uses_afterok_job_ids(
     monkeypatch.setattr(subprocess, "run", completed)
     result = submit_bootstrap_pipeline(config, dry_run=False)
     assert result["jobs"]["preparation"] == "100"
-    assert result["jobs"]["finalisation"] == "105"
+    assert result["jobs"]["finalisation"] == "115"
     assert calls[0][:2] == ["sbatch", "--parsable"]
     assert "--dependency=afterok:100" in calls[1]
-    assert "--dependency=afterok:104" in calls[-1]
+    assert "--dependency=afterok:114" in calls[-1]

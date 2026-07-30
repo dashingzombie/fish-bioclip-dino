@@ -93,13 +93,113 @@ def validate_config(config: dict[str, Any]) -> None:
     path_mode = model.get("bioclip_image_path", {}).get("mode", "disabled")
     if path_mode not in {"disabled", "frozen_zero_shot", "adapter"}:
         raise ConfigError("BioCLIP image path mode is invalid")
+    tuning_mode = model.get("tuning_mode", "frozen")
+    if tuning_mode not in {
+        "frozen",
+        "linear_probe",
+        "adapter",
+        "partial_finetune",
+        "full_finetune",
+    }:
+        raise ConfigError("model.tuning_mode is invalid")
+    if tuning_mode == "partial_finetune" and int(
+        model.get("unfreeze_last_blocks", 0)
+    ) < 1:
+        raise ConfigError(
+            "partial_finetune requires model.unfreeze_last_blocks >= 1"
+        )
+    bioclip_config = model.get("bioclip", {})
+    if tuning_mode in {"partial_finetune", "full_finetune"}:
+        if model.get("backbone") != "bioclip2":
+            raise ConfigError(
+                f"{tuning_mode} requires model.backbone=bioclip2"
+            )
+        if bioclip_config.get("freeze_image_encoder", True):
+            raise ConfigError(
+                f"{tuning_mode} requires "
+                "model.bioclip.freeze_image_encoder=false"
+            )
+        if not bioclip_config.get("freeze_text_encoder", True):
+            raise ConfigError(
+                "BioCLIP text encoder must remain frozen"
+            )
+    text_space = model.get("bioclip_image_path", {}).get(
+        "text_space", "native"
+    )
+    if text_space not in {"native", "adapter"}:
+        raise ConfigError(
+            "model.bioclip_image_path.text_space must be native or adapter"
+        )
     for split_name in ("test", "unseen"):
         candidate = config["inference"].get(split_name, {}).get("candidate_set")
         if candidate not in {"seen", "unseen", "all"}:
             raise ConfigError(f"inference.{split_name}.candidate_set is invalid")
     unseen_mode = config["inference"].get("unseen", {}).get("mode")
-    if unseen_mode in {"supervised", "supervised_plus_text"}:
+    if unseen_mode in {
+        "supervised",
+        "supervised_plus_text",
+        "bioclip_supervised",
+        "bioclip_supervised_plus_text",
+    }:
         raise ConfigError("The supervised head cannot be used for unseen inference")
+    if config["inference"].get("training_free_native", False):
+        modes = {
+            config["inference"].get(split_name, {}).get("mode")
+            for split_name in ("test", "unseen")
+        }
+        if modes != {"bioclip_native"} or tuning_mode != "frozen":
+            raise ConfigError(
+                "inference.training_free_native requires frozen "
+                "bioclip_native test and unseen modes"
+            )
+    pseudo_unseen = config.get("validation", {}).get(
+        "pseudo_unseen", {}
+    )
+    if pseudo_unseen.get("split_seed") is not None:
+        split_seed = int(pseudo_unseen["split_seed"])
+        available_seeds = {
+            int(seed) for seed in pseudo_unseen.get("seeds", [])
+        }
+        if available_seeds and split_seed not in available_seeds:
+            raise ConfigError(
+                "validation.pseudo_unseen.split_seed must be one of "
+                "validation.pseudo_unseen.seeds"
+            )
+    stage = config["training"].get("stage")
+    required_tuning = {
+        "bioclip_linear_probe": "linear_probe",
+        "bioclip_adapter": "adapter",
+        "bioclip_partial_finetune": "partial_finetune",
+        "bioclip_full_finetune": "full_finetune",
+    }
+    if stage in required_tuning and tuning_mode != required_tuning[stage]:
+        raise ConfigError(
+            f"training.stage={stage} requires "
+            f"model.tuning_mode={required_tuning[stage]}"
+        )
+    enabled_hard_negatives: list[str] = []
+    for loss_name in (
+        "dino_text_classification",
+        "native_bioclip_text",
+    ):
+        hard = config["loss"].get(loss_name, {}).get(
+            "hard_negatives", {}
+        )
+        if not hard.get("enabled", False):
+            continue
+        strategy = hard.get("strategy")
+        if strategy not in {
+            "same_genus",
+            "same_family",
+            "text_similar",
+            "visually_similar",
+        }:
+            raise ConfigError("Hard-negative strategy is invalid")
+        enabled_hard_negatives.append(loss_name)
+    if len(enabled_hard_negatives) > 1:
+        raise ConfigError(
+            "Enable hard-negative mining on only one loss per controlled ablation"
+        )
     accumulation_steps = int(
         config["training"].get("gradient_accumulation_steps", 1)
     )

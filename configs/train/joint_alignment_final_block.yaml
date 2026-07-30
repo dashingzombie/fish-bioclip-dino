@@ -1,0 +1,23 @@
+defaults: [joint_alignment_preserving.yaml]
+
+# Run only after best-alignment-preserving.pt has been evaluated and
+# pseudo-unseen performance is stable.
+training:
+  stage: joint_alignment_final_block
+  checkpoint_name: best-alignment-final-block.pt
+  metrics_name: alignment-final-block.json
+  resume_checkpoint: outputs/checkpoints/best-alignment-preserving.pt
+  parameter_groups:
+    dino_last_block: {lr: 1.0e-6, weight_decay: 0.0001}
+    projector: {lr: 1.0e-4, weight_decay: 0.01}
+    logit_scale: {lr: 1.0e-5, weight_decay: 0.0}
+
+model:
+  dino:
+    trainable_scope: final_block
+
+loss:
+  representation_distillation:
+    enabled: true
+    weight: 0.5
+    checkpoint: outputs/checkpoints/best-stage2.pt

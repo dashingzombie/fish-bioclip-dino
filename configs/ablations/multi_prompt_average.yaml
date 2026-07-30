@@ -1,0 +1,13 @@
+defaults: [../train/projection_only.yaml]
+training:
+  checkpoint_name: best-multi-prompt.pt
+  metrics_name: multi-prompt.json
+text:
+  prototype_ensemble:
+    enabled: true
+    weights:
+      scientific_name: 1.0
+      taxonomic_hierarchy: 1.0
+      morphology_only: 1.0
+      morphology_taxonomy: 1.0
+      full_description: 1.0

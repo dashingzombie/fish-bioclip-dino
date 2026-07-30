@@ -1,0 +1,38 @@
+defaults: [../base.yaml]
+training:
+  stage: joint_alignment_preserving
+  checkpoint_name: best-alignment-preserving.pt
+  metrics_name: alignment-preserving.json
+  max_steps: 4000
+  lr: 1.0e-4
+  weight_decay: 0.01
+  resume_checkpoint: outputs/checkpoints/best-stage2.pt
+  parameter_groups:
+    projector: {lr: 1.0e-4, weight_decay: 0.01}
+    logit_scale: {lr: 1.0e-5, weight_decay: 0.0}
+model:
+  backbone: dino_bioclip
+  tuning_mode: frozen
+  dino:
+    trainable_scope: frozen
+  supervised_head:
+    enabled: true
+loss:
+  species_weight: 0.5
+  text_weight: 1.0
+  distillation_weight: 0.5
+  genus_weight: 0.1
+  family_weight: 0.05
+  dino_text_classification: {enabled: true, weight: 1.0}
+  bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: true, weight: 0.5}
+  native_bioclip_text: {enabled: false, weight: 1.0}
+  representation_distillation:
+    enabled: true
+    weight: 0.5
+    checkpoint: outputs/checkpoints/best-stage2.pt
+  genus_supervised: {enabled: true, weight: 0.1}
+  family_supervised: {enabled: true, weight: 0.05}
+validation:
+  selection_branch: fused_text
+  selection_metric: seen_unseen_harmonic_mean

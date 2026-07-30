@@ -6,13 +6,10 @@ evaluation:
 inference:
   test:
     candidate_set: seen
-    mode: bioclip_native
+    mode: bioclip_supervised
 model:
-  bioclip_image_path:
+  backbone: bioclip2
+  tuning_mode: linear_probe
+  bioclip_classifier:
     enabled: true
-    mode: adapter
-    text_space: adapter
-    adapter:
-      enabled: true
-      hidden_dim: 512
-      dropout: 0.1
+    feature_space: native

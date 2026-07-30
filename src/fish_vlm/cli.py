@@ -24,7 +24,10 @@ from fish_vlm.data.pseudo_unseen import save_pseudo_unseen_splits
 from fish_vlm.data.transforms import transform_fingerprint
 from fish_vlm.evaluation.calibrate import calibrate_checkpoint
 from fish_vlm.evaluation.evaluate import evaluate_bioclip_zero_shot, evaluate_checkpoint
+from fish_vlm.evaluation.model_selection import select_model_checkpoints
+from fish_vlm.evaluation.stages import evaluate_stage_checkpoints
 from fish_vlm.inference.predict import predict_split
+from fish_vlm.inference.audit import audit_unseen_inference
 from fish_vlm.inference.submission import merge_predictions, package_submission
 from fish_vlm.inference.validation import validate_submission
 from fish_vlm.models.bioclip import load_bioclip
@@ -46,7 +49,7 @@ from fish_vlm.training.train import (
     load_runtime_image_cache,
     train_from_config,
 )
-from fish_vlm.utils.io import write_json
+from fish_vlm.utils.io import read_json, write_json
 from fish_vlm.utils.logging import configure_logging
 from fish_vlm.workflow import write_pipeline_summary
 
@@ -72,12 +75,41 @@ def build_parser() -> argparse.ArgumentParser:
     _config_parser(commands, "train")
     evaluate = _config_parser(commands, "evaluate", checkpoint=True)
     evaluate.add_argument("--output")
+    evaluate.add_argument("--selection-report")
+    evaluate.add_argument(
+        "--purpose", choices=("seen", "unseen", "joint")
+    )
+    evaluate_stages = _config_parser(commands, "evaluate-stages")
+    evaluate_stages.add_argument(
+        "--output",
+        default="outputs/metrics/stage_comparison.json",
+    )
+    select_models = _config_parser(commands, "select-models")
+    select_models.add_argument(
+        "--output",
+        default="outputs/metrics/model_selection.json",
+    )
     calibrate = _config_parser(commands, "calibrate", checkpoint=True)
     calibrate.add_argument("--output", default="outputs/metrics/calibration.json")
+    calibrate.add_argument("--selection-report")
+    calibrate.add_argument(
+        "--purpose", choices=("seen", "unseen", "joint")
+    )
     infer = _config_parser(commands, "infer", checkpoint=True)
     infer.add_argument("--split", choices=("test", "unseen"))
     infer.add_argument("--output", required=True)
     infer.add_argument("--calibration")
+    infer.add_argument("--selection-report")
+    infer.add_argument(
+        "--purpose", choices=("seen", "unseen", "joint")
+    )
+    verify_unseen = _config_parser(
+        commands, "verify-unseen-inference", checkpoint=True
+    )
+    verify_unseen.add_argument(
+        "--output",
+        default="outputs/metrics/unseen_inference_audit.json",
+    )
     merge = commands.add_parser("merge-submission")
     merge.add_argument("--test", required=True)
     merge.add_argument("--unseen", required=True)
@@ -381,6 +413,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(result, sort_keys=True))
         return 0
+    if (
+        getattr(args, "selection_report", None)
+        and getattr(args, "purpose", None)
+    ):
+        selection = read_json(args.selection_report)["selection"][
+            args.purpose
+        ]
+        args.checkpoint = selection["checkpoint"]
+        if selection.get("inference_config"):
+            args.config = selection["inference_config"]
     config = load_config(args.config)
     if args.command == "list-images":
         print(
@@ -420,6 +462,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.output:
             write_json(args.output, metrics)
         print(json.dumps(metrics, sort_keys=True))
+    elif args.command == "evaluate-stages":
+        result = evaluate_stage_checkpoints(config)
+        write_json(args.output, result)
+        print(json.dumps(result, sort_keys=True))
+    elif args.command == "select-models":
+        result = select_model_checkpoints(config, args.output)
+        write_json(args.output, result)
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "calibrate":
         if not args.checkpoint:
             raise ValueError("--checkpoint is required for calibration")
@@ -435,6 +485,12 @@ def main(argv: list[str] | None = None) -> int:
             config, args.checkpoint, args.output, split=split, calibration_path=args.calibration
         )
         print(json.dumps({"predictions": len(result), "output": args.output}))
+    elif args.command == "verify-unseen-inference":
+        if not args.checkpoint:
+            raise ValueError("--checkpoint is required for unseen verification")
+        result = audit_unseen_inference(config, args.checkpoint)
+        write_json(args.output, result)
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "validate-submission":
         print(json.dumps(validate_submission(args.submission, config), sort_keys=True))
     elif args.command == "slurm":

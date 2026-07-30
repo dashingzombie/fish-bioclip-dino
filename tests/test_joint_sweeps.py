@@ -168,6 +168,9 @@ def test_confirmation_materialises_three_seeds_for_top_eight(
     assert len(confirmations) == 24
     assert {run["seed"] for run in confirmations} == {7, 42, 123}
     assert len({run["name"] for run in confirmations}) == 24
+    for run in confirmations:
+        resolved = load_config(run["config_path"])
+        assert resolved["validation"]["pseudo_unseen"]["split_seed"] == 42
 
     source_ids = list(dict.fromkeys(run["source_run_id"] for run in confirmations))
     for run in confirmations:

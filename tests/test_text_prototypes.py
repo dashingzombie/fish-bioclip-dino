@@ -8,7 +8,11 @@ import torch
 
 from conftest import TinyBioClip, tiny_tokenizer
 from fish_vlm import cli
-from fish_vlm.prototypes.text import build_text_prototype_cache, load_text_prototype_cache
+from fish_vlm.prototypes.text import (
+    build_text_prototype_cache,
+    load_text_prototype_cache,
+    validate_bioclip_text_identity,
+)
 from fish_vlm.utils.hashing import prompts_hash
 
 
@@ -35,6 +39,55 @@ def test_text_cache_round_trip_and_incompatibility(tmp_path: Path) -> None:
             species_names=names,
             checkpoint="different",
             prompt_hash=prompts_hash(prompts, names),
+            embedding_dim=3,
+        )
+
+
+def test_text_cache_invalidates_tokenizer_and_text_encoder_changes(
+    tmp_path: Path,
+) -> None:
+    prompts = {"A fish": "A prompt"}
+    model = TinyBioClip()
+    path = tmp_path / "text.pt"
+    cache = build_text_prototype_cache(
+        prompts, ["A fish"], model, tiny_tokenizer, "mock", path
+    )
+    validate_bioclip_text_identity(
+        cache, model, tiny_tokenizer, device="cpu"
+    )
+
+    def changed_tokenizer(texts: list[str]) -> torch.Tensor:
+        return tiny_tokenizer(texts) + 1
+
+    with pytest.raises(ValueError, match="tokenizer"):
+        validate_bioclip_text_identity(
+            cache, model, changed_tokenizer, device="cpu"
+        )
+
+    changed_model = TinyBioClip()
+    changed_model.load_state_dict(model.state_dict())
+    with torch.no_grad():
+        changed_model.text.weight.zero_()
+    with pytest.raises(ValueError, match="text encoder"):
+        validate_bioclip_text_identity(
+            cache, changed_model, tiny_tokenizer, device="cpu"
+        )
+
+
+def test_legacy_text_cache_schema_is_rejected(tmp_path: Path) -> None:
+    prompts = {"A fish": "A prompt"}
+    path = tmp_path / "text.pt"
+    cache = build_text_prototype_cache(
+        prompts, ["A fish"], TinyBioClip(), tiny_tokenizer, "mock", path
+    )
+    del cache["cache_schema_version"]
+    torch.save(cache, path)
+    with pytest.raises(ValueError, match="lacks fields"):
+        load_text_prototype_cache(
+            path,
+            species_names=["A fish"],
+            checkpoint="mock",
+            prompt_hash=prompts_hash(prompts, ["A fish"]),
             embedding_dim=3,
         )
 

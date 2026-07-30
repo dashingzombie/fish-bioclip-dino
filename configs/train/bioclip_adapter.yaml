@@ -7,11 +7,14 @@ training:
   lr: 0.0001
   weight_decay: 0.01
 model:
+  backbone: bioclip2
+  tuning_mode: adapter
   dino:
     trainable_scope: frozen
   bioclip_image_path:
     enabled: true
     mode: adapter
+    text_space: adapter
     adapter:
       enabled: true
       hidden_dim: 512
@@ -22,3 +25,4 @@ loss:
   native_bioclip_text: {enabled: true, weight: 1.0}
 validation:
   selection_branch: bioclip_native
+  selection_metric: seen_unseen_harmonic_mean

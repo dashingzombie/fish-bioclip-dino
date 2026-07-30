@@ -1,0 +1,12 @@
+defaults: [../ablations/weighted_morphology_taxonomy.yaml]
+evaluation:
+  split: train
+  candidate_set: unseen
+  official_split: unseen
+inference:
+  unseen:
+    candidate_set: unseen
+    mode: fused_text
+model:
+  supervised_head:
+    enabled: false

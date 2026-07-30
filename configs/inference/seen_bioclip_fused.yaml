@@ -1,0 +1,5 @@
+defaults: [seen_bioclip_linear.yaml]
+inference:
+  test:
+    candidate_set: seen
+    mode: bioclip_supervised_plus_text

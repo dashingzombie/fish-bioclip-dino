@@ -1,0 +1,9 @@
+defaults: [../train/joint_alignment_preserving.yaml]
+training:
+  checkpoint_name: best-hard-negative-visual.pt
+  metrics_name: hard-negative-visual.json
+loss:
+  dino_text_classification:
+    enabled: true
+    weight: 1.0
+    hard_negatives: {enabled: true, strategy: visually_similar, top_k: 5}

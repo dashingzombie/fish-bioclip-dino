@@ -80,6 +80,24 @@ def build_slurm_workflow_steps(
             "preparation",
             prepare_gpus,
         ),
+        WorkflowStep(
+            "evaluate_bioclip_zero_shot",
+            cli(
+                "evaluate",
+                "--config",
+                base_config,
+                "--output",
+                _resolved(
+                    root,
+                    workflow.get(
+                        "zero_shot_output",
+                        "outputs/metrics/bioclip_zero_shot.json",
+                    ),
+                ),
+            ),
+            "preparation",
+            prepare_gpus,
+        ),
     ]
     for stage in workflow["training_stages"]:
         stage_config = _resolved(root, stage["config"])
@@ -123,6 +141,29 @@ def build_slurm_workflow_steps(
         stage_submission = str(stage_output_dir / "prediction.json")
         stage_zip = str(stage_output_dir / "submission.zip")
         stage_group = f"training_{stage_name}"
+        if stage_name == "joint_supervised_text":
+            steps.append(
+                WorkflowStep(
+                    "verify_unseen_inference",
+                    cli(
+                        "verify-unseen-inference",
+                        "--config",
+                        _resolved(root, workflow["unseen_inference_config"]),
+                        "--checkpoint",
+                        stage_checkpoint,
+                        "--output",
+                        _resolved(
+                            root,
+                            workflow.get(
+                                "unseen_audit_output",
+                                "outputs/metrics/unseen_inference_audit.json",
+                            ),
+                        ),
+                    ),
+                    stage_group,
+                    training_gpus,
+                )
+            )
         steps.extend(
             [
                 WorkflowStep(
@@ -211,10 +252,56 @@ def build_slurm_workflow_steps(
                 ),
             ]
         )
-    checkpoint = _resolved(root, workflow["final_checkpoint"])
+        if stage_name == "joint_supervised_text":
+            steps.append(
+                WorkflowStep(
+                    "evaluate_dino_stages",
+                    cli(
+                        "evaluate-stages",
+                        "--config",
+                        base_config,
+                        "--output",
+                        _resolved(
+                            root,
+                            workflow.get(
+                                "stage_comparison_output",
+                                "outputs/metrics/stage_comparison.json",
+                            ),
+                        ),
+                    ),
+                    stage_group,
+                    training_gpus,
+                )
+            )
+    seen_checkpoint = _resolved(
+        root,
+        workflow.get(
+            "final_seen_checkpoint", workflow["final_checkpoint"]
+        ),
+    )
+    unseen_checkpoint = _resolved(
+        root,
+        workflow.get(
+            "final_unseen_checkpoint", workflow["final_checkpoint"]
+        ),
+    )
     seen_config = _resolved(root, workflow["seen_inference_config"])
     unseen_config = _resolved(root, workflow["unseen_inference_config"])
     calibration = _resolved(root, workflow["calibration_output"])
+    unseen_calibration = _resolved(
+        root,
+        workflow.get(
+            "unseen_calibration_output",
+            "outputs/metrics/unseen_calibration.json",
+        ),
+    )
+    model_selection = _resolved(
+        root,
+        workflow.get(
+            "model_selection_output",
+            "outputs/metrics/model_selection.json",
+        ),
+    )
     test_predictions = _resolved(root, workflow["test_predictions"])
     unseen_predictions = _resolved(root, workflow["unseen_predictions"])
     submission = _resolved(root, workflow["submission_output"])
@@ -222,13 +309,29 @@ def build_slurm_workflow_steps(
     steps.extend(
         [
             WorkflowStep(
+                "select_models",
+                cli(
+                    "select-models",
+                    "--config",
+                    base_config,
+                    "--output",
+                    model_selection,
+                ),
+                "finalisation",
+                final_gpus,
+            ),
+            WorkflowStep(
                 "evaluate_final",
                 cli(
                     "evaluate",
                     "--config",
                     seen_config,
                     "--checkpoint",
-                    checkpoint,
+                    seen_checkpoint,
+                    "--selection-report",
+                    model_selection,
+                    "--purpose",
+                    "seen",
                     "--output",
                     final_metrics,
                 ),
@@ -242,9 +345,31 @@ def build_slurm_workflow_steps(
                     "--config",
                     seen_config,
                     "--checkpoint",
-                    checkpoint,
+                    seen_checkpoint,
+                    "--selection-report",
+                    model_selection,
+                    "--purpose",
+                    "seen",
                     "--output",
                     calibration,
+                ),
+                "finalisation",
+                final_gpus,
+            ),
+            WorkflowStep(
+                "calibrate_unseen_checkpoint",
+                cli(
+                    "calibrate",
+                    "--config",
+                    seen_config,
+                    "--checkpoint",
+                    unseen_checkpoint,
+                    "--selection-report",
+                    model_selection,
+                    "--purpose",
+                    "unseen",
+                    "--output",
+                    unseen_calibration,
                 ),
                 "finalisation",
                 final_gpus,
@@ -256,7 +381,11 @@ def build_slurm_workflow_steps(
                     "--config",
                     seen_config,
                     "--checkpoint",
-                    checkpoint,
+                    seen_checkpoint,
+                    "--selection-report",
+                    model_selection,
+                    "--purpose",
+                    "seen",
                     "--calibration",
                     calibration,
                     "--output",
@@ -272,9 +401,13 @@ def build_slurm_workflow_steps(
                     "--config",
                     unseen_config,
                     "--checkpoint",
-                    checkpoint,
+                    unseen_checkpoint,
+                    "--selection-report",
+                    model_selection,
+                    "--purpose",
+                    "unseen",
                     "--calibration",
-                    calibration,
+                    unseen_calibration,
                     "--output",
                     unseen_predictions,
                 ),
@@ -446,6 +579,16 @@ def write_pipeline_summary(config: dict[str, Any]) -> dict[str, Any]:
         }
     final_metrics_path = Path(_resolved(root, workflow["final_metrics"]))
     calibration_path = Path(_resolved(root, workflow["calibration_output"]))
+    unseen_calibration_path = Path(
+        _resolved(root, workflow["unseen_calibration_output"])
+    )
+    stage_comparison_path = Path(
+        _resolved(root, workflow["stage_comparison_output"])
+    )
+    model_selection_path = Path(
+        _resolved(root, workflow["model_selection_output"])
+    )
+    zero_shot_path = Path(_resolved(root, workflow["zero_shot_output"]))
     submission_path = Path(_resolved(root, workflow["submission_output"]))
     final_metrics = read_json(final_metrics_path)
     validation = validate_submission(submission_path, config)
@@ -455,15 +598,38 @@ def write_pipeline_summary(config: dict[str, Any]) -> dict[str, Any]:
         if key.endswith("_accuracy")
         and not key.endswith("balanced_accuracy")
         and not key.endswith("top5_accuracy")
+        and isinstance(value, (int, float))
     }
-    best_branch = max(branch_accuracies, key=branch_accuracies.get) if branch_accuracies else None
+    selected_branch = final_metrics.get("selection_branch")
+    best_branch = (
+        str(selected_branch)
+        if selected_branch in branch_accuracies
+        else max(branch_accuracies, key=branch_accuracies.get)
+        if branch_accuracies
+        else None
+    )
     summary = {
         "status": "complete",
         "selection_metric": config["validation"]["selection_metric"],
-        "final_checkpoint": _resolved(root, workflow["final_checkpoint"]),
+        "purpose_checkpoint_defaults": {
+            "seen": _resolved(root, workflow["final_seen_checkpoint"]),
+            "unseen": _resolved(
+                root, workflow["final_unseen_checkpoint"]
+            ),
+            "joint": _resolved(root, workflow["final_joint_checkpoint"]),
+        },
+        "purpose_checkpoint_selection": read_json(
+            model_selection_path
+        )["selection"],
         "stages": stages,
+        "bioclip_zero_shot": read_json(zero_shot_path),
+        "dino_stage_comparison": read_json(stage_comparison_path),
+        "all_model_selection": read_json(model_selection_path),
         "final_evaluation": final_metrics,
         "calibration": read_json(calibration_path),
+        "unseen_checkpoint_calibration": read_json(
+            unseen_calibration_path
+        ),
         "submission": validation,
         "interpretation": {
             "best_final_seen_branch": best_branch,

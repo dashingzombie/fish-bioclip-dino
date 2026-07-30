@@ -13,8 +13,14 @@ from fish_vlm.utils.io import read_json, torch_save_atomic
 
 REQUIRED_KEYS = {
     "embeddings", "species_names", "species_to_index", "checkpoint",
-    "embedding_dim", "prompt_hash", "normalised",
+    "embedding_dim", "prompt_hash", "normalised", "cache_schema_version",
+    "tokenizer_probe_tokens", "text_encoder_probe_embeddings",
 }
+TEXT_CACHE_SCHEMA_VERSION = 2
+TEXT_IDENTITY_PROBES = (
+    "A photograph of a fish.",
+    "Salmo salar",
+)
 
 
 @torch.no_grad()
@@ -50,6 +56,12 @@ def build_text_prototype_cache(
             ) from error
 
     model = model.to(device)
+    probe_tokens = tokenizer(list(TEXT_IDENTITY_PROBES))
+    if not torch.is_tensor(probe_tokens):
+        raise TypeError("BioCLIP tokenizer must return a token tensor")
+    probe_embeddings = encode_bioclip_text(
+        model, probe_tokens.to(device)
+    ).cpu()
     chunks: list[torch.Tensor] = []
     for start in range(0, len(names), batch_size):
         texts = [prompts[name] for name in names[start : start + batch_size]]
@@ -64,6 +76,9 @@ def build_text_prototype_cache(
         "embedding_dim": int(embeddings.shape[-1]),
         "prompt_hash": prompts_hash(prompts, names),
         "normalised": True,
+        "cache_schema_version": TEXT_CACHE_SCHEMA_VERSION,
+        "tokenizer_probe_tokens": probe_tokens.cpu(),
+        "text_encoder_probe_embeddings": probe_embeddings,
     }
     torch_save_atomic(cache, output_path)
     return cache
@@ -87,6 +102,7 @@ def load_text_prototype_cache(
         "checkpoint": checkpoint,
         "prompt_hash": prompt_hash,
         "normalised": True,
+        "cache_schema_version": TEXT_CACHE_SCHEMA_VERSION,
     }
     if embedding_dim is not None:
         expected["embedding_dim"] = embedding_dim
@@ -105,7 +121,48 @@ def load_text_prototype_cache(
     norms = embeddings.float().norm(dim=-1)
     if len(norms) and not torch.allclose(norms, torch.ones_like(norms), atol=1e-4):
         raise ValueError("Text prototype cache claims normalisation but embeddings are not normalised")
+    probe_tokens = cache["tokenizer_probe_tokens"]
+    probe_embeddings = cache["text_encoder_probe_embeddings"]
+    if not torch.is_tensor(probe_tokens) or probe_tokens.ndim != 2:
+        raise ValueError("Text prototype cache tokenizer probe is incompatible")
+    if (
+        not torch.is_tensor(probe_embeddings)
+        or probe_embeddings.shape != (len(TEXT_IDENTITY_PROBES), int(cache["embedding_dim"]))
+    ):
+        raise ValueError("Text prototype cache text-encoder probe is incompatible")
+    probe_norms = probe_embeddings.float().norm(dim=-1)
+    if not torch.allclose(
+        probe_norms, torch.ones_like(probe_norms), atol=1e-4
+    ):
+        raise ValueError("Text prototype cache encoder probe is not normalised")
     return cache
+
+
+@torch.no_grad()
+def validate_bioclip_text_identity(
+    cache: dict[str, Any],
+    model: torch.nn.Module,
+    tokenizer: Any,
+    *,
+    device: torch.device | str,
+) -> None:
+    """Prove the live tokenizer and text encoder reproduce the cached identity probes."""
+    tokens = tokenizer(list(TEXT_IDENTITY_PROBES))
+    if not torch.is_tensor(tokens):
+        raise TypeError("BioCLIP tokenizer must return a token tensor")
+    cached_tokens = cache["tokenizer_probe_tokens"]
+    if not torch.equal(tokens.cpu(), cached_tokens):
+        raise ValueError(
+            "Live BioCLIP tokenizer is inconsistent with the text-prototype cache"
+        )
+    embeddings = encode_bioclip_text(model, tokens.to(device)).cpu()
+    cached_embeddings = cache["text_encoder_probe_embeddings"].float()
+    if not torch.allclose(
+        embeddings.float(), cached_embeddings, atol=1e-4, rtol=1e-4
+    ):
+        raise ValueError(
+            "Live BioCLIP text encoder is inconsistent with the text-prototype cache"
+        )
 
 
 def load_prompts(path: str | Path) -> dict[str, str]:

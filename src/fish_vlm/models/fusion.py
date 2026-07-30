@@ -16,12 +16,15 @@ class CalibrationParameters:
     supervised_temperature: float = 1.0
     dino_text_weight: float = 0.5
     supervised_weight: float = 0.7
+    calibration_gamma: float = 0.0
 
     def __post_init__(self) -> None:
         if min(self.dino_temperature, self.bioclip_temperature, self.supervised_temperature) <= 0:
             raise ValueError("All temperatures must be positive")
         if not 0 <= self.dino_text_weight <= 1 or not 0 <= self.supervised_weight <= 1:
             raise ValueError("Fusion weights must be in [0, 1]")
+        if self.calibration_gamma < 0:
+            raise ValueError("calibration_gamma must be non-negative")
 
 
 def calibrated_probabilities(logits: torch.Tensor, temperature: float) -> torch.Tensor:
@@ -80,6 +83,30 @@ def fuse_text_probabilities(
     dino = calibrated_probabilities(dino_logits, calibration.dino_temperature)
     bioclip = calibrated_probabilities(bioclip_logits, calibration.bioclip_temperature)
     return calibration.dino_text_weight * dino + (1.0 - calibration.dino_text_weight) * bioclip
+
+
+def apply_seen_class_penalty(
+    probabilities: torch.Tensor,
+    seen_class_indices: list[int] | torch.Tensor,
+    gamma: float,
+) -> torch.Tensor:
+    """Apply calibrated stacking to seen classes and renormalise."""
+    if gamma < 0:
+        raise ValueError("calibration_gamma must be non-negative")
+    indices = torch.as_tensor(
+        seen_class_indices,
+        dtype=torch.long,
+        device=probabilities.device,
+    )
+    if indices.ndim != 1 or indices.unique().numel() != indices.numel():
+        raise ValueError("Seen class indices must be unique and one-dimensional")
+    if bool(((indices < 0) | (indices >= probabilities.shape[1])).any()):
+        raise ValueError("Seen class index is outside the candidate space")
+    penalised = probabilities.clone()
+    penalised[:, indices] *= torch.exp(
+        probabilities.new_tensor(-float(gamma))
+    )
+    return penalised / penalised.sum(dim=-1, keepdim=True).clamp_min(1e-12)
 
 
 def fuse_seen_probabilities(

@@ -13,3 +13,4 @@ sweep:
     training.validation_interval_steps: 250
     training.early_stopping_patience_evaluations: 6
     validation.selection_metric: estimated_overall_accuracy
+    validation.pseudo_unseen.split_seed: 42

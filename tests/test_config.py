@@ -30,6 +30,18 @@ def test_epoch_configuration_is_rejected() -> None:
         validate_config(config)
 
 
+def test_priority_bioclip_configs_are_explicit_and_loadable() -> None:
+    linear = load_config("configs/train/bioclip_linear_probe.yaml")
+    partial = load_config("configs/train/bioclip_partial_finetune.yaml")
+    full = load_config("configs/train/bioclip_full_finetune.yaml")
+    assert linear["model"]["tuning_mode"] == "linear_probe"
+    assert partial["model"]["backbone"] == "bioclip2"
+    assert partial["model"]["tuning_mode"] == "partial_finetune"
+    assert partial["model"]["unfreeze_last_blocks"] == 1
+    assert partial["optimiser"]["backbone_lr"] == 1.0e-6
+    assert full["model"]["tuning_mode"] == "full_finetune"
+
+
 def test_invalid_unseen_supervised_mode(tmp_path: Path) -> None:
     path = tmp_path / "bad.yaml"
     path.write_text(

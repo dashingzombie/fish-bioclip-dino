@@ -24,18 +24,81 @@ workflow:
       checkpoint: outputs/checkpoints/best.pt
       metrics: outputs/metrics/best.json
       seen_inference_config: configs/inference/seen.yaml
+    - name: bioclip_linear_probe
+      config: configs/train/bioclip_linear_probe.yaml
+      checkpoint: outputs/checkpoints/best-bioclip-linear.pt
+      metrics: outputs/metrics/bioclip-linear.json
+      seen_inference_config: configs/inference/seen_bioclip_fused.yaml
+      unseen_inference_config: configs/inference/unseen_bioclip_native.yaml
     - name: bioclip_adapter
       config: configs/train/bioclip_adapter.yaml
       checkpoint: outputs/checkpoints/best-adapter.pt
       metrics: outputs/metrics/adapter.json
       seen_inference_config: configs/inference/seen_adapter.yaml
       unseen_inference_config: configs/inference/unseen_adapter.yaml
+    - name: bioclip_partial_finetune
+      config: configs/train/bioclip_partial_finetune.yaml
+      checkpoint: outputs/checkpoints/best-bioclip-partial.pt
+      metrics: outputs/metrics/bioclip-partial.json
+      seen_inference_config: configs/inference/seen_bioclip_fused.yaml
+      unseen_inference_config: configs/inference/unseen_bioclip_native.yaml
+    - name: joint_alignment_preserving
+      config: configs/train/joint_alignment_preserving.yaml
+      checkpoint: outputs/checkpoints/best-alignment-preserving.pt
+      metrics: outputs/metrics/alignment-preserving.json
+      seen_inference_config: configs/inference/seen.yaml
+    - name: hard_negative_same_genus
+      config: configs/ablations/hard_negative_same_genus.yaml
+      checkpoint: outputs/checkpoints/best-hard-negative-genus.pt
+      metrics: outputs/metrics/hard-negative-genus.json
+      seen_inference_config: configs/inference/seen.yaml
+    - name: hard_negative_same_family
+      config: configs/ablations/hard_negative_same_family.yaml
+      checkpoint: outputs/checkpoints/best-hard-negative-family.pt
+      metrics: outputs/metrics/hard-negative-family.json
+      seen_inference_config: configs/inference/seen.yaml
+    - name: hard_negative_text_similar
+      config: configs/ablations/hard_negative_text_similar.yaml
+      checkpoint: outputs/checkpoints/best-hard-negative-text.pt
+      metrics: outputs/metrics/hard-negative-text.json
+      seen_inference_config: configs/inference/seen.yaml
+    - name: hard_negative_visual
+      config: configs/ablations/hard_negative_visual.yaml
+      checkpoint: outputs/checkpoints/best-hard-negative-visual.pt
+      metrics: outputs/metrics/hard-negative-visual.json
+      seen_inference_config: configs/inference/seen.yaml
+    - name: multi_prompt_average
+      config: configs/ablations/multi_prompt_average.yaml
+      checkpoint: outputs/checkpoints/best-multi-prompt.pt
+      metrics: outputs/metrics/multi-prompt.json
+      seen_inference_config: configs/inference/seen_multi_prompt.yaml
+      unseen_inference_config: configs/inference/unseen_multi_prompt.yaml
+    - name: weighted_morphology_taxonomy
+      config: configs/ablations/weighted_morphology_taxonomy.yaml
+      checkpoint: outputs/checkpoints/best-weighted-prototype.pt
+      metrics: outputs/metrics/weighted-prototype.json
+      seen_inference_config: configs/inference/seen_weighted_prototype.yaml
+      unseen_inference_config: configs/inference/unseen_weighted_prototype.yaml
+    - name: bioclip_full_finetune
+      config: configs/train/bioclip_full_finetune.yaml
+      checkpoint: outputs/checkpoints/best-bioclip-full.pt
+      metrics: outputs/metrics/bioclip-full.json
+      seen_inference_config: configs/inference/seen_bioclip_fused.yaml
+      unseen_inference_config: configs/inference/unseen_bioclip_native.yaml
 
   stage_submission_dir: outputs/submissions/stages
+  final_seen_checkpoint: outputs/checkpoints/best.pt
+  final_unseen_checkpoint: outputs/checkpoints/best-stage1.pt
+  final_joint_checkpoint: outputs/checkpoints/best-stage2.pt
+  stage_comparison_output: outputs/metrics/stage_comparison.json
+  model_selection_output: outputs/metrics/model_selection.json
   final_checkpoint: outputs/checkpoints/best.pt
   seen_inference_config: configs/inference/seen.yaml
   unseen_inference_config: configs/inference/unseen.yaml
   calibration_output: outputs/metrics/calibration.json
+  unseen_calibration_output: outputs/metrics/unseen_calibration.json
+  zero_shot_output: outputs/metrics/bioclip_zero_shot.json
+  unseen_audit_output: outputs/metrics/unseen_inference_audit.json
   final_metrics: outputs/metrics/final_seen_evaluation.json
   test_predictions: outputs/predictions/test.json
   unseen_predictions: outputs/predictions/unseen.json

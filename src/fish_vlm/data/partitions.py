@@ -37,11 +37,55 @@ class ClassPartitions:
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "ClassPartitions":
-        return cls(
+        partitions = cls(
             seen_species=list(value["seen_species"]),
             unseen_species=list(value["unseen_species"]),
             all_species=list(value["all_species"]),
         )
+        partitions.validate()
+        expected = partitions.to_dict()
+        mapping_keys = set(expected) - {
+            "seen_species",
+            "unseen_species",
+            "all_species",
+        }
+        missing = sorted(mapping_keys - set(value))
+        if missing:
+            raise ValueError(
+                f"Persisted class partitions lack ordering mappings: {missing}"
+            )
+        mismatches = sorted(
+            key for key in mapping_keys if value.get(key) != expected[key]
+        )
+        if mismatches:
+            raise ValueError(
+                "Persisted class partition mappings do not match their ordered "
+                f"species lists: {mismatches}"
+            )
+        return partitions
+
+    def validate(self) -> None:
+        """Validate sorted, unique, disjoint and exhaustive class identities."""
+        for name, species in (
+            ("seen_species", self.seen_species),
+            ("unseen_species", self.unseen_species),
+            ("all_species", self.all_species),
+        ):
+            if species != sorted(species):
+                raise ValueError(f"{name} must be sorted")
+            if len(species) != len(set(species)):
+                raise ValueError(f"{name} contains duplicates")
+            if not all(isinstance(item, str) and item for item in species):
+                raise ValueError(f"{name} must contain non-empty strings")
+        overlap = sorted(set(self.seen_species) & set(self.unseen_species))
+        if overlap:
+            raise ValueError(f"Seen and unseen species overlap: {overlap}")
+        expected_all = sorted(set(self.seen_species) | set(self.unseen_species))
+        if self.all_species != expected_all:
+            raise ValueError(
+                "all_species must be the sorted union of seen_species and "
+                "unseen_species"
+            )
 
 
 def build_class_partitions(labels: dict[str, str], all_classes: list[str]) -> ClassPartitions:
@@ -52,11 +96,13 @@ def build_class_partitions(labels: dict[str, str], all_classes: list[str]) -> Cl
     if unknown:
         raise ValueError(f"Labelled species absent from all_classes.pkl: {unknown}")
     all_species = sorted(vocabulary)
-    return ClassPartitions(
+    partitions = ClassPartitions(
         seen_species=sorted(seen),
         unseen_species=sorted(vocabulary - seen),
         all_species=all_species,
     )
+    partitions.validate()
+    return partitions
 
 
 def create_and_save_partitions(
@@ -77,4 +123,3 @@ def create_and_save_partitions(
 def load_partitions(path: str | Path) -> ClassPartitions:
     """Load persisted partitions."""
     return ClassPartitions.from_dict(read_json(path))
-
