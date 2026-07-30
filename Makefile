@@ -1,7 +1,7 @@
 PYTHON ?= python
 CONFIG ?= configs/base.yaml
 CHECKPOINT ?= outputs/checkpoints/best.pt
-GPUS ?= 4
+GPUS ?= 1
 MAX_CONCURRENT ?= 8
 PIPELINE_CONFIG ?= configs/pipeline.yaml
 SWEEP_OUTPUT ?= outputs/sweep_pipelines/joint_supervised_text

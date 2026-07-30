@@ -79,16 +79,16 @@ training:
   stage: projection_only
   max_steps: 4000
   validation_interval_steps: 250
-  batch_size: 512
-  eval_batch_size: 2048
+  batch_size: 256
+  eval_batch_size: 512
   gradient_accumulation_steps: 1
   lr: 0.0003
   weight_decay: 0.01
   use_amp: true
   amp_dtype: bfloat16
-  num_workers: 18
-  eval_num_workers: 10
-  prefetch_factor: 8
+  num_workers: 8
+  eval_num_workers: 4
+  prefetch_factor: 2
   persistent_workers: true
   conservative_augmentation: true
   teacher_cache_dtype: float16
@@ -188,15 +188,15 @@ wandb:
 
 slurm:
   job_name: fish-dino-bioclip
-  gpus: 4
-  cpus: 128
-  memory: 700G
-  time_limit: "4:00:00"
-  partition: gpu-h200
+  gpus: 1
+  cpus: 16
+  memory: 96G
+  time_limit: "8:00:00"
+  partition: gpu-h200,gpu-l40s
   account: worm-species
   environment_activate: source .venv/bin/activate
   work_dir: .
-  log_dir: outputs/slurm
-  script_dir: outputs/slurm
+  log_dir: outputs/slurm_slow
+  script_dir: outputs/slurm_slow
   stage_cache_on_node: true
   node_cache_dir: fish-vlm-cache
