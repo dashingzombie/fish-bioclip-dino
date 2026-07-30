@@ -4,9 +4,9 @@ workflow:
   preparation_config: configs/pipeline.yaml
   preparation_gpus: 1
   final_gpus: 1
-  cpus: 128
-  memory: 700G
-  time_limit: "4:00:00"
+  cpus: 8
+  memory: 48G
+  time_limit: "08:00:00"
 
   training_stages:
     - name: projection_only
