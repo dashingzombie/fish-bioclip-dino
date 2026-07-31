@@ -154,9 +154,13 @@ def compute_total_loss(
         section = config.get(name, {})
         if not section.get("enabled", False):
             continue
-        if output.supervised_logits is None or mapping is None:
+        if output.supervised_logits is None:
             raise ValueError(
-                f"Enabled {name} requires supervised logits and taxonomy"
+                f"Enabled {name} requires the supervised head"
+            )
+        if mapping is None:
+            raise ValueError(
+                f"Enabled {name} requires taxonomy metadata"
             )
         add(
             name,

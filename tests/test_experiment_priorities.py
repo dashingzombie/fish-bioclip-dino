@@ -87,6 +87,26 @@ def test_hierarchy_metrics_and_losses() -> None:
     assert genus_for_species("GenusA one") == "GenusA"
 
 
+def test_hierarchy_loss_ignores_species_without_family_metadata() -> None:
+    logits = torch.tensor(
+        [[3.0, 2.0, 0.0], [0.0, 1.0, 4.0]],
+        requires_grad=True,
+    )
+    targets = torch.tensor([1, 2])
+    partial = hierarchical_cross_entropy(logits, targets, [0, 0, -1])
+    known_only = hierarchical_cross_entropy(
+        logits[:1], targets[:1], [0, 0, -1]
+    )
+    assert torch.allclose(partial, known_only)
+    partial.backward()
+    assert torch.isfinite(logits.grad).all()
+
+    no_known_targets = hierarchical_cross_entropy(
+        logits.detach()[1:], targets[1:], [0, 0, -1]
+    )
+    assert no_known_targets.item() == 0.0
+
+
 def test_each_hard_negative_strategy_is_individually_runnable() -> None:
     logits = torch.tensor(
         [[5.0, 4.0, 1.0], [1.0, 5.0, 4.0]],
@@ -111,6 +131,21 @@ def test_each_hard_negative_strategy_is_individually_runnable() -> None:
             prototype_similarity=similarity,
         )
         assert torch.isfinite(loss)
+
+
+def test_same_family_negatives_fall_back_for_unknown_family() -> None:
+    logits = torch.tensor([[5.0, 0.0, 4.0]], requires_grad=True)
+    loss = hard_negative_cross_entropy(
+        logits,
+        torch.tensor([0]),
+        strategy="same_family",
+        top_k=1,
+        class_groups=[-1, -1, 0],
+    )
+    expected = torch.nn.functional.cross_entropy(
+        logits[:, [0, 2]], torch.tensor([0])
+    )
+    assert torch.allclose(loss, expected)
 
 
 def test_seen_penalty_and_native_bioclip_space() -> None:

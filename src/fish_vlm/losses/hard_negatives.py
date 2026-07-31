@@ -55,7 +55,16 @@ def hard_negative_cross_entropy(
         )
         if groups.ndim != 1 or len(groups) != classes:
             raise ValueError("Taxonomy groups must match logit columns")
-        group_mask = groups.unsqueeze(0) == groups[targets].unsqueeze(1)
+        if groups.min().item() < -1:
+            raise ValueError(
+                "Taxonomy group indices must be -1 or non-negative"
+            )
+        target_groups = groups[targets]
+        group_mask = (
+            (groups.unsqueeze(0) == target_groups.unsqueeze(1))
+            & (groups.unsqueeze(0) >= 0)
+            & (target_groups.unsqueeze(1) >= 0)
+        )
         group_mask.scatter_(1, targets[:, None], False)
         ranked = logits.detach().float().masked_fill(~group_mask, float("-inf"))
         available = group_mask.sum(dim=-1)

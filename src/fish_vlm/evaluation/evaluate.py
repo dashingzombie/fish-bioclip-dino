@@ -23,6 +23,7 @@ from fish_vlm.training.checkpoint import load_checkpoint
 from fish_vlm.training.distributed import DistributedContext
 from fish_vlm.training.train import (
     _data_processed_path,
+    _split_labelled_filenames,
     build_runtime,
     _pseudo_split_path,
     evaluate_loader,
