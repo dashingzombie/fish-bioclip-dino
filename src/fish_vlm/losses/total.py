@@ -23,6 +23,32 @@ class LossResult:
     components: dict[str, torch.Tensor]
 
 
+def apply_missing_family_fallbacks(config: dict) -> list[str]:
+    """Disable or replace objectives that cannot run without family metadata."""
+    fallbacks: list[str] = []
+    family_loss = config.get("family_supervised", {})
+    if family_loss.get("enabled", False):
+        family_loss["enabled"] = False
+        fallbacks.append("disabled family_supervised: no family metadata")
+    for loss_name in (
+        "dino_text_classification",
+        "native_bioclip_text",
+    ):
+        hard_negatives = config.get(loss_name, {}).get(
+            "hard_negatives", {}
+        )
+        if (
+            hard_negatives.get("enabled", False)
+            and hard_negatives.get("strategy") == "same_family"
+        ):
+            hard_negatives["strategy"] = "model_score"
+            fallbacks.append(
+                f"changed {loss_name} hard negatives from same_family to "
+                "model_score: no family metadata"
+            )
+    return fallbacks
+
+
 def compute_total_loss(
     output: ModelOutput,
     targets: torch.Tensor,

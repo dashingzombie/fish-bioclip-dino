@@ -7,6 +7,7 @@ from fish_vlm.data.taxonomy import genus_for_species
 from fish_vlm.evaluation.model_selection import select_model_checkpoints
 from fish_vlm.losses.hard_negatives import hard_negative_cross_entropy
 from fish_vlm.losses.hierarchy import hierarchical_cross_entropy
+from fish_vlm.losses.total import apply_missing_family_fallbacks
 from fish_vlm.models.bioclip import configure_bioclip_tuning
 from fish_vlm.models.fusion import (
     apply_seen_class_penalty,
@@ -146,6 +147,28 @@ def test_same_family_negatives_fall_back_for_unknown_family() -> None:
         logits[:, [0, 2]], torch.tensor([0])
     )
     assert torch.allclose(loss, expected)
+
+
+def test_missing_family_metadata_applies_runnable_fallbacks() -> None:
+    losses = {
+        "family_supervised": {"enabled": True, "weight": 0.05},
+        "dino_text_classification": {
+            "enabled": True,
+            "weight": 1.0,
+            "hard_negatives": {
+                "enabled": True,
+                "strategy": "same_family",
+                "top_k": 5,
+            },
+        },
+    }
+    fallbacks = apply_missing_family_fallbacks(losses)
+    assert not losses["family_supervised"]["enabled"]
+    assert (
+        losses["dino_text_classification"]["hard_negatives"]["strategy"]
+        == "model_score"
+    )
+    assert len(fallbacks) == 2
 
 
 def test_seen_penalty_and_native_bioclip_space() -> None:
