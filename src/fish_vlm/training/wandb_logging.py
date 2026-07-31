@@ -86,6 +86,7 @@ def scientific_run_config(config: dict[str, Any]) -> dict[str, Any]:
         "selection_branch": config["validation"].get("selection_branch"),
         "fusion": config["fusion"],
         "sweep": config.get("sweep_metadata"),
+        "runtime_fallbacks": config.get("_runtime_fallbacks", []),
     }
 
 

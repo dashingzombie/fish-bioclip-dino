@@ -194,6 +194,11 @@ alignment-preserving joint configuration starts with species `0.5`, text
 `1.0`, distillation `0.5`, genus `0.1`, and family `0.05`. Similarities,
 normalisation, softmax/KL and log-sum-exp-sensitive work are float32 even under
 AMP. BioCLIP stays frozen except in the explicit partial/full tuning stages.
+If no family metadata can be extracted, the effective run disables the family
+auxiliary loss and changes same-family hard-negative mining to score-based hard
+negatives. Both fallbacks are logged and recorded in W&B/checkpoint metadata so
+the pipeline can continue without presenting the unavailable objective as
+active.
 
 Training is step-based and each stage controls its own maximum steps and
 validation interval. The Genome profile targets one complete `gpu-h200` node:

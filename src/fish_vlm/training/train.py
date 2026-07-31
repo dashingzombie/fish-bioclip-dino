@@ -30,7 +30,10 @@ from fish_vlm.data.partitions import (
     load_partitions,
 )
 from fish_vlm.data.transforms import build_dino_transform, transform_fingerprint
-from fish_vlm.losses.total import compute_total_loss
+from fish_vlm.losses.total import (
+    apply_missing_family_fallbacks,
+    compute_total_loss,
+)
 from fish_vlm.models.bioclip import assert_frozen_bioclip, load_bioclip
 from fish_vlm.models.bioclip_adapter import BioClipResidualAdapter
 from fish_vlm.models.cosine_classifier import CosineClassifier
@@ -748,6 +751,7 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
     ]
     family_mapping = load_family_mapping(config, training_species)
     family_class_indices = None
+    runtime_fallbacks: list[str] = []
     if context.is_main:
         LOGGER.info(
             "family taxonomy coverage=%d/%d species",
@@ -767,6 +771,12 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
             )
             for name in training_species
         ]
+    else:
+        runtime_fallbacks = apply_missing_family_fallbacks(config["loss"])
+        if context.is_main:
+            for fallback in runtime_fallbacks:
+                LOGGER.warning("Runtime fallback: %s", fallback)
+    config["_runtime_fallbacks"] = runtime_fallbacks
     hard_negative_context: dict[str, object] = {
         "genus_groups": genus_class_indices,
         "family_groups": family_class_indices,
@@ -1046,6 +1056,7 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                         "family_metadata_coverage": (
                             len(family_mapping) / max(1, len(training_species))
                         ),
+                        "runtime_fallbacks": runtime_fallbacks,
                     }
                     save_checkpoint(
                         output_dir / "checkpoints" / checkpoint_name,
