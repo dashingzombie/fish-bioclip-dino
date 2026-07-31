@@ -748,13 +748,23 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
     ]
     family_mapping = load_family_mapping(config, training_species)
     family_class_indices = None
-    if len(family_mapping) == len(training_species):
+    if context.is_main:
+        LOGGER.info(
+            "family taxonomy coverage=%d/%d species",
+            len(family_mapping),
+            len(training_species),
+        )
+    if family_mapping:
         family_names = sorted(set(family_mapping.values()))
         family_to_index = {
             name: index for index, name in enumerate(family_names)
         }
         family_class_indices = [
-            family_to_index[family_mapping[name]]
+            (
+                family_to_index[family_mapping[name]]
+                if name in family_mapping
+                else -1
+            )
             for name in training_species
         ]
     hard_negative_context: dict[str, object] = {
@@ -1033,6 +1043,9 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
                             if isinstance(section, dict)
                             and section.get("enabled", False)
                         ],
+                        "family_metadata_coverage": (
+                            len(family_mapping) / max(1, len(training_species))
+                        ),
                     }
                     save_checkpoint(
                         output_dir / "checkpoints" / checkpoint_name,
