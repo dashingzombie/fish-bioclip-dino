@@ -25,12 +25,18 @@ def submit_slurm_script(
     if dependency:
         command.append(f"--dependency=afterok:{dependency}")
     command.append(str(script_path))
-    result = subprocess.run(
-        command,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or str(error)).strip()
+        raise RuntimeError(
+            f"Slurm submission failed for {script_path}: {detail}"
+        ) from error
     return result.stdout.strip().split(";", 1)[0]
 
 

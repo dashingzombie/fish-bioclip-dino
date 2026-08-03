@@ -965,11 +965,21 @@ def run_joint_sweeps(
                         "The master pipeline was already submitted; "
                         "pass --resume to continue incomplete work"
                     )
-                bootstrap = {
-                    "mode": "slurm",
-                    "status": "submitted",
-                    "jobs": master["jobs"],
-                }
+                bootstrap = submit_bootstrap_pipeline(
+                    pipeline,
+                    dry_run=False,
+                    gpus=int(pipeline["slurm"].get("gpus", 4)),
+                    existing_jobs={
+                        str(name): str(job_id)
+                        for name, job_id in master["jobs"].items()
+                    },
+                )
+                master["jobs"] = bootstrap["jobs"]
+                master["workflow_hash"] = bootstrap["workflow_hash"]
+                master["status"] = bootstrap["status"]
+                if bootstrap.get("resumed_from"):
+                    master["resumed_from"] = bootstrap["resumed_from"]
+                save_state(state_path, state)
             else:
                 bootstrap = submit_bootstrap_pipeline(
                     pipeline,
@@ -979,9 +989,10 @@ def run_joint_sweeps(
                 master["jobs"] = bootstrap["jobs"]
                 master["workflow_hash"] = bootstrap["workflow_hash"]
                 save_state(state_path, state)
-            initial_dependency = str(
-                bootstrap["jobs"]["finalisation"]
-            )
+            if bootstrap.get("status") != "complete":
+                initial_dependency = str(
+                    bootstrap["jobs"]["finalisation"]
+                )
         phase = "loss"
         auto_chain = True
 

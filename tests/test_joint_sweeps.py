@@ -368,3 +368,133 @@ def test_everything_submits_pipeline_array_and_next_controller(
         (tmp_path / "sweep" / "state.json").read_text(encoding="utf-8")
     )
     assert state["master_pipeline"]["jobs"]["finalisation"] == "805"
+
+
+def test_everything_resume_refreshes_failed_master_dependency(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    root = tmp_path / "sweep"
+    root.mkdir(parents=True)
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "phases": {},
+                "master_pipeline": {
+                    "jobs": {
+                        "preparation": "800",
+                        "finalisation": "805",
+                    },
+                    "workflow_hash": "old-workflow",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed: dict[str, object] = {}
+
+    def fake_bootstrap(config, **kwargs):
+        observed["bootstrap_kwargs"] = kwargs
+        return {
+            "mode": "slurm",
+            "status": "resubmitted",
+            "workflow_hash": "new-workflow",
+            "resumed_from": "training_joint_alignment_preserving",
+            "jobs": {
+                "preparation": "800",
+                "finalisation": "905",
+            },
+        }
+
+    def fake_launch(config, *, dry_run):
+        observed["array_dependency"] = config["slurm"]["dependency"]
+        return "910"
+
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_bootstrap_pipeline",
+        fake_bootstrap,
+    )
+    monkeypatch.setattr("fish_vlm.sweeps.joint.launch_slurm", fake_launch)
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_slurm_script",
+        lambda *args, **kwargs: "911",
+    )
+    result = run_joint_sweeps(
+        everything=True,
+        submit=True,
+        resume=True,
+        output_root=root,
+    )
+    capsys.readouterr()
+    assert observed["bootstrap_kwargs"] == {
+        "dry_run": False,
+        "gpus": 4,
+        "existing_jobs": {
+            "preparation": "800",
+            "finalisation": "805",
+        },
+    }
+    assert observed["array_dependency"] == "905"
+    assert result["job_ids"] == ["910"]
+    state = json.loads((root / "state.json").read_text(encoding="utf-8"))
+    assert state["master_pipeline"]["jobs"]["finalisation"] == "905"
+    assert state["master_pipeline"]["status"] == "resubmitted"
+
+
+def test_everything_resume_omits_dependency_after_completed_master(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    root = tmp_path / "sweep"
+    root.mkdir(parents=True)
+    (root / "state.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "phases": {},
+                "master_pipeline": {
+                    "jobs": {
+                        "preparation": "800",
+                        "finalisation": "805",
+                    },
+                    "workflow_hash": "workflow",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_bootstrap_pipeline",
+        lambda config, **kwargs: {
+            "mode": "slurm",
+            "status": "complete",
+            "workflow_hash": "workflow",
+            "jobs": {
+                "preparation": "800",
+                "finalisation": "805",
+            },
+        },
+    )
+
+    def fake_launch(config, *, dry_run):
+        observed["array_dependency"] = config["slurm"]["dependency"]
+        return "910"
+
+    monkeypatch.setattr("fish_vlm.sweeps.joint.launch_slurm", fake_launch)
+    monkeypatch.setattr(
+        "fish_vlm.sweeps.joint.submit_slurm_script",
+        lambda *args, **kwargs: "911",
+    )
+    run_joint_sweeps(
+        everything=True,
+        submit=True,
+        resume=True,
+        output_root=root,
+    )
+    capsys.readouterr()
+    assert observed["array_dependency"] is None

@@ -100,3 +100,50 @@ def test_slurm_submission_uses_afterok_job_ids(
     assert calls[0][:2] == ["sbatch", "--parsable"]
     assert "--dependency=afterok:100" in calls[1]
     assert "--dependency=afterok:114" in calls[-1]
+
+
+def test_slurm_resume_resubmits_failed_suffix(
+    monkeypatch, tmp_path: Path
+) -> None:
+    config = copy.deepcopy(load_config("configs/pipeline.yaml"))
+    config["slurm"]["script_dir"] = str(tmp_path / "scripts")
+    config["output_dir"] = str(tmp_path / "outputs")
+    plan = submit_bootstrap_pipeline(config, dry_run=True)
+    names = [str(job["name"]) for job in plan["jobs"]]
+    existing = {
+        name: str(100 + index) for index, name in enumerate(names)
+    }
+    calls: list[list[str]] = []
+
+    def completed(command, **kwargs):
+        calls.append(command)
+        if command[0] == "sacct":
+            rows = []
+            for index, job_id in enumerate(existing.values()):
+                state = "COMPLETED" if index < 2 else "FAILED"
+                rows.append(f"{job_id}|{state}|")
+            return subprocess.CompletedProcess(
+                command, 0, stdout="\n".join(rows) + "\n", stderr=""
+            )
+        new_job_id = str(200 + sum(call[0] == "sbatch" for call in calls) - 1)
+        return subprocess.CompletedProcess(
+            command, 0, stdout=f"{new_job_id}\n", stderr=""
+        )
+
+    monkeypatch.setattr(subprocess, "run", completed)
+    result = submit_bootstrap_pipeline(
+        config,
+        dry_run=False,
+        existing_jobs=existing,
+    )
+    sbatch_calls = [call for call in calls if call[0] == "sbatch"]
+    assert result["status"] == "resubmitted"
+    assert result["resumed_from"] == names[2]
+    assert result["jobs"][names[0]] == "100"
+    assert result["jobs"][names[1]] == "101"
+    assert result["jobs"][names[2]] == "200"
+    assert "--dependency" not in sbatch_calls[0]
+    assert "--dependency=afterok:200" in sbatch_calls[1]
+    assert result["jobs"]["finalisation"] == str(
+        200 + len(sbatch_calls) - 1
+    )

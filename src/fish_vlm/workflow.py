@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any
 
 from fish_vlm.inference.validation import validate_submission
+from fish_vlm.slurm.launcher import submit_slurm_script
 from fish_vlm.slurm.templates import render_workflow_batch_script
 from fish_vlm.utils.hashing import stable_json_hash
-from fish_vlm.utils.io import atomic_write_text, read_json, write_json
+from fish_vlm.utils.io import read_json, write_json
 
 
 @dataclass(frozen=True)
@@ -470,13 +471,50 @@ def _workflow_state_path(config: dict[str, Any]) -> Path:
     return output / "pipeline" / "workflow_state.json"
 
 
+_ACTIVE_SLURM_STATES = {
+    "CONFIGURING",
+    "COMPLETING",
+    "PENDING",
+    "RUNNING",
+    "SUSPENDED",
+}
+
+
+def _slurm_job_states(job_ids: list[str]) -> dict[str, str]:
+    """Return base Slurm states for the requested non-array job IDs."""
+    if not job_ids:
+        return {}
+    result = subprocess.run(
+        [
+            "sacct",
+            "--noheader",
+            "--parsable2",
+            "--jobs",
+            ",".join(job_ids),
+            "--format=JobIDRaw,State",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    requested = set(job_ids)
+    states: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        fields = line.strip().split("|", maxsplit=2)
+        if len(fields) < 2 or fields[0] not in requested:
+            continue
+        states[fields[0]] = fields[1].split(maxsplit=1)[0].rstrip("+")
+    return states
+
+
 def submit_bootstrap_pipeline(
     config: dict[str, Any],
     *,
     dry_run: bool,
     gpus: int | None = None,
+    existing_jobs: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Render or submit the bootstrap jobs linked by strict dependencies."""
+    """Render, submit, or resume bootstrap jobs linked by strict dependencies."""
     if gpus is not None:
         if gpus < 1:
             raise ValueError("gpus must be at least one")
@@ -526,26 +564,71 @@ def submit_bootstrap_pipeline(
         script_dir = _root(config) / script_dir
     script_dir = script_dir / "pipeline"
     job_ids: dict[str, str] = {}
+    start_index = 0
+    resumed_from: str | None = None
+    slurm_states: dict[str, str] = {}
+    if existing_jobs:
+        existing_ids = [
+            str(existing_jobs[str(job["name"])])
+            for job in rendered
+            if str(job["name"]) in existing_jobs
+        ]
+        slurm_states = _slurm_job_states(existing_ids)
+        for index, job in enumerate(rendered):
+            name = str(job["name"])
+            job_id = str(existing_jobs.get(name, ""))
+            state = slurm_states.get(job_id, "UNKNOWN")
+            if state == "COMPLETED":
+                job_ids[name] = job_id
+                start_index = index + 1
+                continue
+            if state in _ACTIVE_SLURM_STATES:
+                state = {
+                    "mode": "slurm",
+                    "status": "submitted",
+                    "workflow_hash": workflow_hash,
+                    "jobs": {
+                        str(key): str(value)
+                        for key, value in existing_jobs.items()
+                    },
+                    "slurm_states": slurm_states,
+                }
+                write_json(_workflow_state_path(config), state)
+                return state
+            start_index = index
+            resumed_from = name
+            break
+        else:
+            state = {
+                "mode": "slurm",
+                "status": "complete",
+                "workflow_hash": workflow_hash,
+                "jobs": job_ids,
+                "slurm_states": slurm_states,
+            }
+            write_json(_workflow_state_path(config), state)
+            return state
     previous_job_id: str | None = None
-    for job in rendered:
+    for job in rendered[start_index:]:
         script_path = script_dir / f"{job['name']}.sh"
-        atomic_write_text(script_path, str(job["script"]))
-        command = ["sbatch", "--parsable"]
-        if previous_job_id is not None:
-            command.append(f"--dependency=afterok:{previous_job_id}")
-        command.append(str(script_path))
-        result = subprocess.run(command, check=True, capture_output=True, text=True)
-        job_id = result.stdout.strip().split(";", maxsplit=1)[0]
+        job_id = submit_slurm_script(
+            str(job["script"]),
+            script_path,
+            dependency=previous_job_id,
+        )
         if not job_id:
             raise RuntimeError(f"sbatch returned no job ID for {job['name']}")
         job_ids[str(job["name"])] = job_id
         previous_job_id = job_id
     state = {
         "mode": "slurm",
-        "status": "submitted",
+        "status": "resubmitted" if resumed_from is not None else "submitted",
         "workflow_hash": workflow_hash,
         "jobs": job_ids,
     }
+    if resumed_from is not None:
+        state["resumed_from"] = resumed_from
+        state["previous_slurm_states"] = slurm_states
     write_json(_workflow_state_path(config), state)
     return state
 

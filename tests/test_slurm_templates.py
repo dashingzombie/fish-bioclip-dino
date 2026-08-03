@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from fish_vlm.config import load_config
 from fish_vlm.slurm.launcher import submit_slurm_script
 from fish_vlm.slurm.templates import render_batch_script
@@ -68,3 +70,23 @@ def test_dependency_aware_submission_records_parsable_job_id(
             str(tmp_path / "job.sh"),
         ]
     ]
+
+
+def test_submission_error_includes_slurm_stderr(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    def failed(command, **kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            command,
+            stderr="sbatch: error: Invalid job id specified",
+        )
+
+    monkeypatch.setattr(subprocess, "run", failed)
+    with pytest.raises(RuntimeError, match="Invalid job id specified"):
+        submit_slurm_script(
+            "#!/usr/bin/env bash\ntrue\n",
+            tmp_path / "job.sh",
+            dependency="999",
+        )

@@ -354,7 +354,9 @@ Each phase is one Slurm array with an optional `%N` concurrency limit. Phase
 two inherits the best completed phase-one resolved configuration; later phases
 follow the same rule. Consequently, `--phase all` submits or materialises the
 next ready phase and stops until its metrics exist. Rerun the same command with
-`--resume` to submit only incomplete runs from a previously submitted phase.
+`--resume` to preserve the completed bootstrap prefix, resubmit from its first
+failed or stale Slurm job, and submit only incomplete sweep runs against the
+refreshed finalisation dependency.
 
 The deterministic reduced grids contain 30 loss runs, 15 optimizer runs, 20
 architecture/consistency runs, and 18 batch/duration runs. The current
