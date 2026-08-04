@@ -19,6 +19,7 @@ STAGE_SCOPES = {
     "bioclip_adapter": "frozen",
     "bioclip_partial_finetune": "frozen",
     "bioclip_full_finetune": "frozen",
+    "dino_seen_classifier": "full",
 }
 
 
@@ -46,6 +47,7 @@ def configure_training_stage(
         "joint_supervised_text",
         "joint_alignment_preserving",
         "joint_alignment_final_block",
+        "dino_seen_classifier",
     }:
         if model.supervised_head is None:
             raise ValueError("Joint stage requires the supervised head")

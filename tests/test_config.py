@@ -42,6 +42,22 @@ def test_priority_bioclip_configs_are_explicit_and_loadable() -> None:
     assert full["model"]["tuning_mode"] == "full_finetune"
 
 
+def test_hybrid_config_is_full_dino_with_scientific_name_fallback() -> None:
+    config = load_config("configs/hybrid/dino_seen.yaml")
+    assert config["training"]["stage"] == "dino_seen_classifier"
+    assert config["model"]["dino"]["trainable_scope"] == "full"
+    assert config["loss"]["supervised_species"]["enabled"]
+    assert not config["loss"]["dino_text_classification"]["enabled"]
+    weights = config["text"]["prototype_ensemble"]["weights"]
+    assert weights["scientific_name"] == 1.0
+    assert all(
+        value == 0.0
+        for name, value in weights.items()
+        if name != "scientific_name"
+    )
+    assert config["validation"]["pseudo_unseen"]["split_seed"] == 42
+
+
 def test_invalid_unseen_supervised_mode(tmp_path: Path) -> None:
     path = tmp_path / "bad.yaml"
     path.write_text(

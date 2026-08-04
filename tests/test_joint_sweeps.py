@@ -17,15 +17,14 @@ from fish_vlm.sweeps.joint import (
 from fish_vlm.utils.io import write_json
 
 
-def test_makefile_exposes_only_the_unified_pipeline_targets() -> None:
+def test_makefile_exposes_only_the_hybrid_production_runpoint() -> None:
     makefile = Path("Makefile").read_text(encoding="utf-8")
-    assert "everything:" in makefile
-    assert "everything-dry-run:" in makefile
-    assert "everything-resume:" in makefile
-    assert "scripts/run_joint_sweeps.py --everything --submit" in makefile
+    assert "hybrid:" in makefile
+    assert "hybrid-dry-run:" in makefile
+    assert "hybrid-resume:" in makefile
+    assert "scripts/run_hybrid_pipeline.py" in makefile
+    assert "everything:" not in makefile
     assert "scripts/run_all.py" not in makefile
-    assert "run-all-" not in makefile
-    assert "sweep-dry-run:" not in makefile
 
 
 def _index(root: Path) -> dict:

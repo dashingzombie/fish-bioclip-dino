@@ -9,6 +9,11 @@ import torch
 
 from fish_vlm.config import data_path
 from fish_vlm.data.catalog import split_filenames
+from fish_vlm.evaluation.gate_calibrate import (
+    load_gate_calibration,
+    validate_hybrid_checkpoint,
+)
+from fish_vlm.evaluation.gating import gated_prediction_indices
 from fish_vlm.models.fusion import CalibrationParameters
 from fish_vlm.training.checkpoint import (
     checkpoint_training_species,
@@ -134,6 +139,7 @@ def predict_split(
         expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
         strict=False,
     )
+    validate_hybrid_checkpoint(checkpoint)
     if prototype_cache["species_names"] != species_names:
         raise RuntimeError(
             "Candidate prototype columns and output label ordering diverged"
@@ -224,5 +230,118 @@ def predict_split(
         )
     if len(predictions) != len(filenames):
         raise RuntimeError("Prediction output lost or duplicated filenames")
+    write_json(output_path, predictions)
+    return predictions
+
+
+@torch.no_grad()
+def predict_gated_split(
+    config: dict[str, Any],
+    checkpoint_path: str | Path,
+    gate_path: str | Path,
+    output_path: str | Path,
+    *,
+    split: str,
+) -> dict[str, str]:
+    """Apply the DINO-confidence/BioCLIP-all-candidate gate to one split."""
+    if split not in {"test", "unseen"}:
+        raise ValueError("Official split must be test or unseen")
+    if not config["inference"].get("generalised_enabled", False):
+        raise ValueError("Gated inference requires generalised all-class mode")
+    if config["model"].get("tuning_mode", "frozen") != "frozen":
+        raise ValueError("Gated fallback requires frozen native BioCLIP")
+    image_path = config["model"]["bioclip_image_path"]
+    if (
+        image_path.get("mode") != "frozen_zero_shot"
+        or image_path.get("adapter", {}).get("enabled", False)
+    ):
+        raise ValueError("Gated fallback must use unadapted native BioCLIP")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    bundle = build_runtime(config, device=device)
+    prototypes, species_names, prototype_cache = load_candidate_prototypes(
+        config, bundle, "all", device=device
+    )
+    from fish_vlm.training.train import _data_processed_path
+    from fish_vlm.utils.hashing import prompts_hash
+
+    checkpoint = load_checkpoint(
+        checkpoint_path,
+        bundle.model,
+        expected_seen_species=bundle.partitions.seen_species,
+        expected_unseen_species=bundle.partitions.unseen_species,
+        expected_text_prototype_hash=(
+            load_candidate_prototypes(config, bundle, "seen", device=device)[2][
+                "prompt_hash"
+            ]
+        ),
+        expected_canonical_prompt_hash=prompts_hash(
+            read_json(_data_processed_path(config, "canonical_prompts.json")),
+            bundle.partitions.all_species,
+        ),
+        expected_dino_model_name=str(config["model"]["dino"]["name"]),
+        expected_dino_checkpoint_source=bundle.dino_source,
+        expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
+        strict=False,
+    )
+    if prototype_cache["species_names"] != species_names:
+        raise RuntimeError(
+            "All-candidate prototype columns and output labels diverged"
+        )
+    if checkpoint.get("supervised_head_state") is None:
+        raise ValueError("Gated inference requires a trained DINO supervised head")
+    supervised_species = checkpoint_training_species(
+        checkpoint, seen_species=bundle.partitions.seen_species
+    )
+    candidate_to_index = {
+        name: index for index, name in enumerate(species_names)
+    }
+    supervised_class_indices = [
+        candidate_to_index[name] for name in supervised_species
+    ]
+    gate = load_gate_calibration(gate_path)
+    gate_metadata = gate["metadata"]
+    if gate_metadata.get("supervised_species") != supervised_species:
+        raise ValueError(
+            "Gate calibration supervised species do not match the checkpoint"
+        )
+    if int(gate_metadata.get("checkpoint_step", -1)) != int(checkpoint["step"]):
+        raise ValueError("Gate calibration checkpoint step does not match")
+
+    filenames = split_filenames(data_path(config, f"{split}_split"))
+    loader, _ = make_loader(
+        filenames,
+        config,
+        bundle,
+        None,
+        species_names,
+        training=False,
+        context=DistributedContext(0, 1, 0, device),
+    )
+    predictions: dict[str, str] = {}
+    bundle.model.eval()
+    for batch in loader:
+        output = bundle.model(
+            batch["dino_image"].to(device),
+            prototypes,
+            batch["bioclip_image"].to(device),
+        )
+        if output.supervised_logits is None or output.bioclip_logits is None:
+            raise RuntimeError("Gated inference branches are unavailable")
+        prediction_indices, _, _ = gated_prediction_indices(
+            output.supervised_logits,
+            output.bioclip_logits,
+            supervised_class_indices=supervised_class_indices,
+            threshold=float(gate["parameters"]["threshold"]),
+            supervised_temperature=float(
+                gate["parameters"]["supervised_temperature"]
+            ),
+        )
+        decoded = [species_names[index] for index in prediction_indices.cpu()]
+        predictions.update(
+            dict(zip(batch["filename"], decoded, strict=True))
+        )
+    if len(predictions) != len(filenames):
+        raise RuntimeError("Gated prediction lost or duplicated filenames")
     write_json(output_path, predictions)
     return predictions

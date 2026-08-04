@@ -326,3 +326,38 @@ def test_alignment_final_block_is_in_optimizer() -> None:
     assert "dino_last_block" in {
         group["name"] for group in optimizer.param_groups
     }
+
+
+def test_dino_seen_classifier_trains_full_dino_and_head_only() -> None:
+    model = FishMultimodalModel(
+        TinyDino(),
+        LinearDinoToBioClipProjector(4, 3),
+        LearnableLogitScale(),
+        supervised_head=nn.Linear(4, 2),
+    )
+    configure_training_stage(model, "dino_seen_classifier")
+    assert all(parameter.requires_grad for parameter in model.dino.parameters())
+    assert all(
+        parameter.requires_grad for parameter in model.supervised_head.parameters()
+    )
+    assert not any(
+        parameter.requires_grad for parameter in model.projector.parameters()
+    )
+    optimizer = build_optimizer(
+        model,
+        {
+            "training": {
+                "stage": "dino_seen_classifier",
+                "lr": 1.0e-4,
+                "weight_decay": 0.01,
+            },
+            "optimiser": {
+                "backbone_lr": 3.0e-6,
+                "classifier_lr": 3.0e-4,
+            },
+        },
+    )
+    groups = {group["name"]: group for group in optimizer.param_groups}
+    assert set(groups) == {"dino_backbone", "supervised_head"}
+    assert groups["dino_backbone"]["lr"] == 3.0e-6
+    assert groups["supervised_head"]["lr"] == 3.0e-4

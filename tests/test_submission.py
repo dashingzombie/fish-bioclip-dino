@@ -64,3 +64,32 @@ def test_submission_zip_is_deterministic_and_has_one_root_file(
     with zipfile.ZipFile(first) as archive:
         assert archive.namelist() == ["prediction.json"]
         assert archive.read("prediction.json") == submission.read_bytes()
+
+
+def test_generalised_submission_allows_cross_partition_species(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "splits").mkdir()
+    (tmp_path / "label_train.json").write_text(
+        json.dumps({"train.jpg": "Seen fish"})
+    )
+    with (tmp_path / "all_classes.pkl").open("wb") as handle:
+        pickle.dump(["Seen fish", "Unseen fish"], handle)
+    with (tmp_path / "splits/test.pkl").open("wb") as handle:
+        pickle.dump(["test.jpg"], handle)
+    with (tmp_path / "splits/unseen.pkl").open("wb") as handle:
+        pickle.dump(["unseen.jpg"], handle)
+    submission = tmp_path / "prediction.json"
+    submission.write_text(
+        json.dumps(
+            {"test.jpg": "Unseen fish", "unseen.jpg": "Seen fish"}
+        )
+    )
+    strict = _config(tmp_path)
+    with pytest.raises(ValueError, match="Candidate partition violations"):
+        validate_submission(submission, strict)
+    generalised = {
+        **strict,
+        "inference": {"generalised_enabled": True},
+    }
+    assert validate_submission(submission, generalised)["total_images"] == 2

@@ -177,6 +177,19 @@ def validate_config(config: dict[str, Any]) -> None:
             f"training.stage={stage} requires "
             f"model.tuning_mode={required_tuning[stage]}"
         )
+    if stage == "dino_seen_classifier":
+        if scope != "full":
+            raise ConfigError(
+                "dino_seen_classifier requires model.dino.trainable_scope=full"
+            )
+        if not model.get("supervised_head", {}).get("enabled", False):
+            raise ConfigError(
+                "dino_seen_classifier requires model.supervised_head.enabled=true"
+            )
+        if tuning_mode != "frozen":
+            raise ConfigError(
+                "dino_seen_classifier requires frozen BioCLIP"
+            )
     enabled_hard_negatives: list[str] = []
     for loss_name in (
         "dino_text_classification",

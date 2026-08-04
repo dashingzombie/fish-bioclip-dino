@@ -1,0 +1,82 @@
+defaults: [../slurm/genome.yaml]
+
+output_dir: outputs/hybrid/calibration/default
+
+text:
+  prototype_ensemble:
+    enabled: true
+    weights:
+      morphology_only: 0.0
+      taxonomic_hierarchy: 0.0
+      scientific_name: 1.0
+
+model:
+  tuning_mode: frozen
+  dino:
+    trainable_scope: full
+  supervised_head:
+    enabled: true
+  bioclip_image_path:
+    enabled: true
+    mode: frozen_zero_shot
+    adapter:
+      enabled: false
+  bioclip_classifier:
+    enabled: false
+
+optimiser:
+  backbone_lr: 3.0e-6
+  classifier_lr: 3.0e-4
+  backbone_weight_decay: 0.01
+
+training:
+  stage: dino_seen_classifier
+  max_steps: 8000
+  validation_interval_steps: 250
+  checkpoint_name: best.pt
+  metrics_name: best.json
+  resume_checkpoint: null
+
+loss:
+  dino_text_classification: {enabled: false, weight: 1.0}
+  bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: true, weight: 1.0}
+  native_bioclip_text: {enabled: false, weight: 1.0}
+  bioclip_supervised_species: {enabled: false, weight: 1.0}
+  bioclip_pretrained_distillation: {enabled: false, weight: 0.5}
+  representation_distillation: {enabled: false, weight: 0.5}
+  genus_supervised: {enabled: false, weight: 0.1}
+  family_supervised: {enabled: false, weight: 0.05}
+  branch_consistency: {enabled: false, weight: 0.05, method: js}
+
+validation:
+  selection_branch: supervised
+  selection_metric: seen_accuracy
+  pseudo_unseen:
+    enabled: true
+    strategy: species_holdout
+    split_seed: 42
+    holdout_fraction: 0.20
+    seeds: [7, 42, 123]
+    split_path: auto
+
+inference:
+  generalised_enabled: false
+  test: {candidate_set: seen, mode: supervised}
+  unseen: {candidate_set: unseen, mode: bioclip_native}
+
+hybrid_gate:
+  selection_metric: estimated_overall_accuracy
+  threshold_min: 0.0
+  threshold_max: 1.0
+  threshold_steps: 201
+
+wandb:
+  group: dino-seen-confidence-gate
+  tags: [fish, dino, seen-classifier, confidence-gate]
+
+slurm:
+  job_name: fish-dino-bioclip-hybrid
+  time_limit: "24:00:00"
+  log_dir: outputs/hybrid/slurm
+  script_dir: outputs/hybrid/slurm

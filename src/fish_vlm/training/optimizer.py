@@ -48,6 +48,19 @@ def build_optimizer(model: FishMultimodalModel, config: dict) -> torch.optim.Ada
     classifier_lr = float(optimiser.get("classifier_lr", base_lr))
     adapter_lr = float(optimiser.get("adapter_lr", base_lr))
     backbone_lr = float(optimiser.get("backbone_lr", 1e-6))
+    if stage == "dino_seen_classifier":
+        dino_cfg = parameter_groups.get("dino_backbone", {})
+        add(
+            "dino_backbone",
+            _parameters(model.dino),
+            float(dino_cfg.get("lr", backbone_lr)),
+            float(
+                dino_cfg.get(
+                    "weight_decay",
+                    optimiser.get("backbone_weight_decay", base_wd),
+                )
+            ),
+        )
     add(
         "supervised_head",
         _parameters(model.supervised_head),

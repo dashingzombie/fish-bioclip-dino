@@ -28,7 +28,7 @@ def _read_json_reject_duplicates(path: str | Path) -> dict[str, Any]:
 
 
 def validate_submission(path: str | Path, config: dict[str, Any]) -> dict[str, int]:
-    """Validate exact filename coverage, vocabulary, and split partitions."""
+    """Validate exact coverage/vocabulary and the configured candidate policy."""
     submission = _read_json_reject_duplicates(path)
     test_names = split_filenames(data_path(config, "test_split"))
     unseen_names = split_filenames(data_path(config, "unseen_split"))
@@ -45,9 +45,9 @@ def validate_submission(path: str | Path, config: dict[str, Any]) -> dict[str, i
     invalid = sorted({value for value in submission.values() if value not in vocabulary})
     if invalid:
         raise ValueError(f"Predictions outside all_classes.pkl: {invalid}")
-    bad_test = sorted(name for name in test_names if submission[name] not in set(partitions.seen_species))
-    bad_unseen = sorted(name for name in unseen_names if submission[name] not in set(partitions.unseen_species))
-    if bad_test or bad_unseen:
-        raise ValueError(f"Candidate partition violations; test={bad_test}, unseen={bad_unseen}")
+    if not config.get("inference", {}).get("generalised_enabled", False):
+        bad_test = sorted(name for name in test_names if submission[name] not in set(partitions.seen_species))
+        bad_unseen = sorted(name for name in unseen_names if submission[name] not in set(partitions.unseen_species))
+        if bad_test or bad_unseen:
+            raise ValueError(f"Candidate partition violations; test={bad_test}, unseen={bad_unseen}")
     return {"test_images": len(test_names), "unseen_images": len(unseen_names), "total_images": len(expected)}
-

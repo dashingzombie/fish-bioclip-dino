@@ -23,10 +23,11 @@ from fish_vlm.data.partitions import create_and_save_partitions
 from fish_vlm.data.pseudo_unseen import save_pseudo_unseen_splits
 from fish_vlm.data.transforms import transform_fingerprint
 from fish_vlm.evaluation.calibrate import calibrate_checkpoint
+from fish_vlm.evaluation.gate_calibrate import calibrate_gate_checkpoint
 from fish_vlm.evaluation.evaluate import evaluate_bioclip_zero_shot, evaluate_checkpoint
 from fish_vlm.evaluation.model_selection import select_model_checkpoints
 from fish_vlm.evaluation.stages import evaluate_stage_checkpoints
-from fish_vlm.inference.predict import predict_split
+from fish_vlm.inference.predict import predict_gated_split, predict_split
 from fish_vlm.inference.audit import audit_unseen_inference
 from fish_vlm.inference.submission import merge_predictions, package_submission
 from fish_vlm.inference.validation import validate_submission
@@ -95,6 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
     calibrate.add_argument(
         "--purpose", choices=("seen", "unseen", "joint")
     )
+    calibrate_gate = _config_parser(
+        commands, "calibrate-gate", checkpoint=True
+    )
+    calibrate_gate.add_argument("--output", required=True)
+    calibrate_gate.add_argument("--threshold-source")
     infer = _config_parser(commands, "infer", checkpoint=True)
     infer.add_argument("--split", choices=("test", "unseen"))
     infer.add_argument("--output", required=True)
@@ -103,6 +109,12 @@ def build_parser() -> argparse.ArgumentParser:
     infer.add_argument(
         "--purpose", choices=("seen", "unseen", "joint")
     )
+    infer_gated = _config_parser(
+        commands, "infer-gated", checkpoint=True
+    )
+    infer_gated.add_argument("--split", choices=("test", "unseen"), required=True)
+    infer_gated.add_argument("--gate", required=True)
+    infer_gated.add_argument("--output", required=True)
     verify_unseen = _config_parser(
         commands, "verify-unseen-inference", checkpoint=True
     )
@@ -475,6 +487,16 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("--checkpoint is required for calibration")
         result = calibrate_checkpoint(config, args.checkpoint, args.output)
         print(json.dumps(result, sort_keys=True))
+    elif args.command == "calibrate-gate":
+        if not args.checkpoint:
+            raise ValueError("--checkpoint is required for gate calibration")
+        result = calibrate_gate_checkpoint(
+            config,
+            args.checkpoint,
+            args.output,
+            threshold_source=args.threshold_source,
+        )
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "infer":
         if not args.checkpoint:
             raise ValueError("--checkpoint is required for inference")
@@ -483,6 +505,17 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Set --split or evaluation.official_split to test/unseen")
         result = predict_split(
             config, args.checkpoint, args.output, split=split, calibration_path=args.calibration
+        )
+        print(json.dumps({"predictions": len(result), "output": args.output}))
+    elif args.command == "infer-gated":
+        if not args.checkpoint:
+            raise ValueError("--checkpoint is required for gated inference")
+        result = predict_gated_split(
+            config,
+            args.checkpoint,
+            args.gate,
+            args.output,
+            split=args.split,
         )
         print(json.dumps({"predictions": len(result), "output": args.output}))
     elif args.command == "verify-unseen-inference":
