@@ -14,6 +14,9 @@ from fish_vlm.evaluation.gate_calibrate import (
     validate_hybrid_checkpoint,
 )
 from fish_vlm.evaluation.gating import gated_prediction_indices
+from fish_vlm.inference.bioclip_checkpoint import (
+    load_finetuned_bioclip_visual,
+)
 from fish_vlm.models.fusion import CalibrationParameters
 from fish_vlm.training.checkpoint import (
     checkpoint_training_species,
@@ -97,6 +100,7 @@ def predict_split(
     *,
     split: str,
     calibration_path: str | Path | None = None,
+    bioclip_checkpoint_path: str | Path | None = None,
 ) -> dict[str, str]:
     """Predict one official image-only split under its explicit candidate set."""
     if split not in {"test", "unseen"}:
@@ -117,29 +121,60 @@ def predict_split(
     from fish_vlm.utils.hashing import prompts_hash
 
     canonical_prompts = read_json(_data_processed_path(config, "canonical_prompts.json"))
-    checkpoint_text_hash = prototype_cache["prompt_hash"]
+    seen_text_hash = prototype_cache["prompt_hash"]
     if candidate_set != "seen":
         _, _, checkpoint_prototype_cache = load_candidate_prototypes(
             config, bundle, "seen", device=device
         )
-        checkpoint_text_hash = checkpoint_prototype_cache["prompt_hash"]
+        seen_text_hash = checkpoint_prototype_cache["prompt_hash"]
+    checkpoint_text_hash: str | None = seen_text_hash
     if is_training_free_native_bioclip(config, mode):
+        if bioclip_checkpoint_path is not None:
+            raise ValueError(
+                "Fine-tuned BioCLIP cannot use training_free_native inference"
+            )
         checkpoint_text_hash = None
+    canonical_prompt_hash = prompts_hash(
+        canonical_prompts, bundle.partitions.all_species
+    )
     checkpoint = load_checkpoint(
         checkpoint_path,
         bundle.model,
         expected_seen_species=bundle.partitions.seen_species,
         expected_unseen_species=bundle.partitions.unseen_species,
         expected_text_prototype_hash=checkpoint_text_hash,
-        expected_canonical_prompt_hash=prompts_hash(
-            canonical_prompts, bundle.partitions.all_species
-        ),
+        expected_canonical_prompt_hash=canonical_prompt_hash,
         expected_dino_model_name=str(config["model"]["dino"]["name"]),
         expected_dino_checkpoint_source=bundle.dino_source,
         expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
         strict=False,
     )
-    validate_hybrid_checkpoint(checkpoint)
+    hybrid_checkpoint = bool(
+        config["inference"].get("hybrid_dino_seen_checkpoint", False)
+    )
+    if hybrid_checkpoint:
+        validate_hybrid_checkpoint(checkpoint)
+    elif bioclip_checkpoint_path is not None:
+        raise ValueError(
+            "Fine-tuned BioCLIP composition requires an explicitly marked "
+            "hybrid DINO checkpoint"
+        )
+    checkpoint_species = checkpoint_training_species(
+        checkpoint, seen_species=bundle.partitions.seen_species
+    )
+    if bioclip_checkpoint_path is not None:
+        if bundle.model.bioclip is None:
+            raise ValueError("Fine-tuned BioCLIP inference is unavailable")
+        load_finetuned_bioclip_visual(
+            bioclip_checkpoint_path,
+            bundle.model.bioclip,
+            expected_seen_species=bundle.partitions.seen_species,
+            expected_unseen_species=bundle.partitions.unseen_species,
+            expected_training_species=checkpoint_species,
+            expected_text_prototype_hash=seen_text_hash,
+            expected_canonical_prompt_hash=canonical_prompt_hash,
+            expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
+        )
     if prototype_cache["species_names"] != species_names:
         raise RuntimeError(
             "Candidate prototype columns and output label ordering diverged"
@@ -178,10 +213,7 @@ def predict_split(
             for name in bundle.partitions.seen_species
         ]
     if mode in SUPERVISED_MODES:
-        supervised_species = checkpoint_training_species(
-            checkpoint,
-            seen_species=bundle.partitions.seen_species,
-        )
+        supervised_species = checkpoint_species
         candidate_to_index = {
             name: index for index, name in enumerate(species_names)
         }
@@ -242,6 +274,7 @@ def predict_gated_split(
     output_path: str | Path,
     *,
     split: str,
+    bioclip_checkpoint_path: str | Path | None = None,
 ) -> dict[str, str]:
     """Apply the DINO-confidence/BioCLIP-all-candidate gate to one split."""
     if split not in {"test", "unseen"}:
@@ -249,7 +282,7 @@ def predict_gated_split(
     if not config["inference"].get("generalised_enabled", False):
         raise ValueError("Gated inference requires generalised all-class mode")
     if config["model"].get("tuning_mode", "frozen") != "frozen":
-        raise ValueError("Gated fallback requires frozen native BioCLIP")
+        raise ValueError("Gated runtime must construct the frozen BioCLIP architecture")
     image_path = config["model"]["bioclip_image_path"]
     if (
         image_path.get("mode") != "frozen_zero_shot"
@@ -265,25 +298,26 @@ def predict_gated_split(
     from fish_vlm.training.train import _data_processed_path
     from fish_vlm.utils.hashing import prompts_hash
 
+    seen_prototype_cache = load_candidate_prototypes(
+        config, bundle, "seen", device=device
+    )[2]
+    canonical_prompt_hash = prompts_hash(
+        read_json(_data_processed_path(config, "canonical_prompts.json")),
+        bundle.partitions.all_species,
+    )
     checkpoint = load_checkpoint(
         checkpoint_path,
         bundle.model,
         expected_seen_species=bundle.partitions.seen_species,
         expected_unseen_species=bundle.partitions.unseen_species,
-        expected_text_prototype_hash=(
-            load_candidate_prototypes(config, bundle, "seen", device=device)[2][
-                "prompt_hash"
-            ]
-        ),
-        expected_canonical_prompt_hash=prompts_hash(
-            read_json(_data_processed_path(config, "canonical_prompts.json")),
-            bundle.partitions.all_species,
-        ),
+        expected_text_prototype_hash=seen_prototype_cache["prompt_hash"],
+        expected_canonical_prompt_hash=canonical_prompt_hash,
         expected_dino_model_name=str(config["model"]["dino"]["name"]),
         expected_dino_checkpoint_source=bundle.dino_source,
         expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
         strict=False,
     )
+    validate_hybrid_checkpoint(checkpoint)
     if prototype_cache["species_names"] != species_names:
         raise RuntimeError(
             "All-candidate prototype columns and output labels diverged"
@@ -293,6 +327,20 @@ def predict_gated_split(
     supervised_species = checkpoint_training_species(
         checkpoint, seen_species=bundle.partitions.seen_species
     )
+    finetuned_bioclip = None
+    if bioclip_checkpoint_path is not None:
+        if bundle.model.bioclip is None:
+            raise ValueError("Fine-tuned BioCLIP inference is unavailable")
+        finetuned_bioclip = load_finetuned_bioclip_visual(
+            bioclip_checkpoint_path,
+            bundle.model.bioclip,
+            expected_seen_species=bundle.partitions.seen_species,
+            expected_unseen_species=bundle.partitions.unseen_species,
+            expected_training_species=supervised_species,
+            expected_text_prototype_hash=seen_prototype_cache["prompt_hash"],
+            expected_canonical_prompt_hash=canonical_prompt_hash,
+            expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
+        )
     candidate_to_index = {
         name: index for index, name in enumerate(species_names)
     }
@@ -307,6 +355,18 @@ def predict_gated_split(
         )
     if int(gate_metadata.get("checkpoint_step", -1)) != int(checkpoint["step"]):
         raise ValueError("Gate calibration checkpoint step does not match")
+    expected_fallback = (
+        None
+        if bioclip_checkpoint_path is None
+        else str(bioclip_checkpoint_path)
+    )
+    if gate_metadata.get("bioclip_fallback_checkpoint") != expected_fallback:
+        raise ValueError("Gate calibration BioCLIP fallback does not match")
+    expected_bioclip_step = (
+        None if finetuned_bioclip is None else int(finetuned_bioclip["step"])
+    )
+    if gate_metadata.get("bioclip_fallback_checkpoint_step") != expected_bioclip_step:
+        raise ValueError("Gate calibration BioCLIP checkpoint step does not match")
 
     filenames = split_filenames(data_path(config, f"{split}_split"))
     loader, _ = make_loader(

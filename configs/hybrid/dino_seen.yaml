@@ -31,8 +31,9 @@ optimiser:
 
 training:
   stage: dino_seen_classifier
-  max_steps: 8000
-  validation_interval_steps: 250
+  max_steps: 16000
+  validation_interval_steps: 500
+  early_stopping_patience_evaluations: 16
   checkpoint_name: best.pt
   metrics_name: best.json
   resume_checkpoint: null
@@ -40,7 +41,7 @@ training:
 loss:
   dino_text_classification: {enabled: false, weight: 1.0}
   bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
-  supervised_species: {enabled: true, weight: 1.0}
+  supervised_species: {enabled: true, weight: 1.0, label_smoothing: 0.1}
   native_bioclip_text: {enabled: false, weight: 1.0}
   bioclip_supervised_species: {enabled: false, weight: 1.0}
   bioclip_pretrained_distillation: {enabled: false, weight: 0.5}
@@ -77,6 +78,6 @@ wandb:
 
 slurm:
   job_name: fish-dino-bioclip-hybrid
-  time_limit: "24:00:00"
+  time_limit: "36:00:00"
   log_dir: outputs/hybrid/slurm
   script_dir: outputs/hybrid/slurm

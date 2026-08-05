@@ -1,4 +1,4 @@
-"""One resumable run point for the two requested hybrid submissions."""
+"""One resumable run point for four DINO/BioCLIP hybrid submissions."""
 
 from __future__ import annotations
 
@@ -28,6 +28,10 @@ def _read_spec(path: str | Path) -> dict[str, Any]:
         value = yaml.safe_load(handle)
     if not isinstance(value, dict):
         raise TypeError("Hybrid sweep specification must be a YAML mapping")
+    if not isinstance(value.get("finetuned_bioclip_config"), str):
+        raise ValueError(
+            "Hybrid sweep requires finetuned_bioclip_config"
+        )
     recipes = value.get("recipes")
     if not isinstance(recipes, list) or not recipes:
         raise ValueError("Hybrid sweep requires at least one recipe")
@@ -80,6 +84,9 @@ def materialize_hybrid_plan(spec_path: str | Path) -> dict[str, Any]:
     if not base_path.is_absolute():
         base_path = REPOSITORY_ROOT / base_path
     base = _clean_config(load_config(base_path))
+    bioclip_path = Path(str(spec["finetuned_bioclip_config"]))
+    if not bioclip_path.is_absolute():
+        bioclip_path = REPOSITORY_ROOT / bioclip_path
     root = Path(str(spec.get("output_root", "outputs/hybrid")))
     if not root.is_absolute():
         root = REPOSITORY_ROOT / root
@@ -112,15 +119,42 @@ def materialize_hybrid_plan(spec_path: str | Path) -> dict[str, Any]:
                 "gate": str(run_root / "gate.json"),
             }
         )
+    bioclip_root = root / "bioclip" / "calibration"
+    bioclip_config = _clean_config(load_config(bioclip_path))
+    bioclip_config["output_dir"] = str(bioclip_root)
+    bioclip_config["training"]["checkpoint_name"] = "best.pt"
+    bioclip_config["training"]["metrics_name"] = "best.json"
+    bioclip_config["training"]["resume_checkpoint"] = None
+    bioclip_pseudo = bioclip_config["validation"]["pseudo_unseen"]
+    bioclip_pseudo["enabled"] = True
+    bioclip_pseudo["split_seed"] = 42
+    bioclip_pseudo["split_path"] = "auto"
+    bioclip_config["validation"][
+        "selection_metric"
+    ] = "seen_unseen_harmonic_mean"
+    bioclip_config_path = bioclip_root / "resolved_config.yaml"
+    _write_config(bioclip_config_path, bioclip_config)
+    finetuned_bioclip = {
+        "config": str(bioclip_config_path),
+        "checkpoint": str(bioclip_root / "checkpoints" / "best.pt"),
+        "training_metrics": str(bioclip_root / "metrics" / "best.json"),
+        "gate": str(bioclip_root / "gate.json"),
+    }
     plan = {
-        "version": 1,
+        "version": 2,
         "spec": str(Path(spec_path)),
         "base_config": str(base_path),
         "output_root": str(root),
         "runs": runs,
+        "finetuned_bioclip": finetuned_bioclip,
         "submission_outputs": {
-            "hard_routed": str(root / "submissions" / "hard_routed" / "submission.zip"),
-            "confidence_gated": str(root / "submissions" / "confidence_gated" / "submission.zip"),
+            name: str(root / "submissions" / name / "submission.zip")
+            for name in (
+                "pretrained_bioclip_hard_routed",
+                "pretrained_bioclip_confidence_gated",
+                "finetuned_bioclip_hard_routed",
+                "finetuned_bioclip_confidence_gated",
+            )
         },
     }
     write_json(root / "plan.json", plan)
@@ -214,6 +248,7 @@ def _materialize_final_configs(
     hard_seen["model"]["dino"]["trainable_scope"] = "frozen"
     hard_seen["training"]["stage"] = "projection_only"
     hard_seen["inference"]["generalised_enabled"] = False
+    hard_seen["inference"]["hybrid_dino_seen_checkpoint"] = True
     hard_seen["inference"].pop("training_free_native", None)
     hard_seen["inference"]["test"] = {
         "candidate_set": "seen",
@@ -233,8 +268,15 @@ def _materialize_final_configs(
         "candidate_set": "unseen",
         "mode": "bioclip_native",
     }
-    hard_unseen_path = final_root / "inference_hard_unseen.yaml"
+    hard_unseen_path = final_root / "inference_hard_unseen_pretrained.yaml"
     _write_config(hard_unseen_path, hard_unseen)
+
+    hard_unseen_finetuned = copy.deepcopy(hard_unseen)
+    hard_unseen_finetuned["inference"].pop("training_free_native", None)
+    hard_unseen_finetuned_path = (
+        final_root / "inference_hard_unseen_finetuned.yaml"
+    )
+    _write_config(hard_unseen_finetuned_path, hard_unseen_finetuned)
 
     gated = copy.deepcopy(hard_seen)
     gated["inference"]["generalised_enabled"] = True
@@ -251,9 +293,29 @@ def _materialize_final_configs(
     return {
         "final": str(final_path),
         "hard_seen": str(hard_seen_path),
-        "hard_unseen": str(hard_unseen_path),
+        "hard_unseen_pretrained": str(hard_unseen_path),
+        "hard_unseen_finetuned": str(hard_unseen_finetuned_path),
         "gated": str(gated_path),
     }
+
+
+def _materialize_final_bioclip_config(plan: dict[str, Any]) -> str:
+    root = Path(plan["output_root"])
+    final_root = root / "bioclip" / "final"
+    config = _clean_config(
+        load_config(plan["finetuned_bioclip"]["config"])
+    )
+    config["output_dir"] = str(final_root)
+    config["training"]["checkpoint_name"] = "best.pt"
+    config["training"]["metrics_name"] = "best.json"
+    config["training"]["resume_checkpoint"] = None
+    config["validation"]["pseudo_unseen"]["enabled"] = False
+    config["validation"]["pseudo_unseen"]["split_path"] = None
+    config["validation"]["selection_metric"] = "seen_accuracy"
+    config["wandb"]["name"] = "bioclip-long-final-all-seen"
+    path = final_root / "resolved_config.yaml"
+    _write_config(path, config)
+    return str(path)
 
 
 def planned_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
@@ -267,6 +329,7 @@ def planned_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
         "build-text-prototypes",
         "make-pseudo-unseen",
         "build-image-cache",
+        "build-teacher-cache",
     ):
         commands.append(
             {"step": command, "command": _python_command(command, "--config", first_config)}
@@ -292,9 +355,16 @@ def planned_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
                 },
             ]
         )
+    bioclip = plan["finetuned_bioclip"]
     commands.append(
         {
-            "step": "select-recipe-and-run-final",
+            "step": "train:bioclip-long-pseudo-unseen",
+            "command": _train_command(bioclip["config"], gpus),
+        }
+    )
+    commands.append(
+        {
+            "step": "select-dino-calibrate-two-gates-and-run-finals",
             "command": ["dynamic-after-calibration"],
         }
     )
@@ -302,7 +372,7 @@ def planned_commands(plan: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[str, Any]:
-    """Execute preparation, sweep, final fit, and two deterministic ZIPs."""
+    """Execute long DINO/BioCLIP fits and four deterministic ZIPs."""
     plan = materialize_hybrid_plan(spec_path)
     root = Path(plan["output_root"])
     state_path = root / "state.json"
@@ -320,6 +390,7 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
         "build-text-prototypes",
         "make-pseudo-unseen",
         "build-image-cache",
+        "build-teacher-cache",
     ):
         _run_command(_python_command(command_name, "--config", first_config))
 
@@ -349,6 +420,19 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
             state_path=state_path,
         )
 
+    bioclip_calibration = plan["finetuned_bioclip"]
+    _step(
+        "train:bioclip-long-pseudo-unseen",
+        _train_command(bioclip_calibration["config"], gpus),
+        [
+            bioclip_calibration["checkpoint"],
+            bioclip_calibration["training_metrics"],
+        ],
+        resume=resume,
+        state=state,
+        state_path=state_path,
+    )
+
     selected = select_best_recipe(plan)
     write_json(
         root / "selection.json",
@@ -362,7 +446,7 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
     configs = _materialize_final_configs(plan, selected)
     final_checkpoint = root / "final" / "checkpoints" / "best.pt"
     final_metrics = root / "final" / "metrics" / "best.json"
-    final_gate = root / "final" / "gate.json"
+    pretrained_final_gate = root / "final" / "gate_pretrained_bioclip.json"
     _step(
         "train:final-all-seen",
         _train_command(configs["final"], gpus),
@@ -372,7 +456,7 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
         state_path=state_path,
     )
     _step(
-        "calibrate-gate:final-temperature",
+        "calibrate-gate:pretrained-bioclip-final-temperature",
         _python_command(
             "calibrate-gate",
             "--config",
@@ -382,24 +466,97 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
             "--threshold-source",
             selected["gate"],
             "--output",
-            str(final_gate),
+            str(pretrained_final_gate),
         ),
-        [final_gate],
+        [pretrained_final_gate],
+        resume=resume,
+        state=state,
+        state_path=state_path,
+    )
+
+    finetuned_calibration_gate = Path(bioclip_calibration["gate"])
+    _step(
+        "calibrate-gate:finetuned-bioclip-pseudo-unseen",
+        _python_command(
+            "calibrate-gate",
+            "--config",
+            selected["config"],
+            "--checkpoint",
+            selected["checkpoint"],
+            "--bioclip-checkpoint",
+            bioclip_calibration["checkpoint"],
+            "--output",
+            str(finetuned_calibration_gate),
+        ),
+        [finetuned_calibration_gate],
+        resume=resume,
+        state=state,
+        state_path=state_path,
+    )
+
+    final_bioclip_config = _materialize_final_bioclip_config(plan)
+    final_bioclip_checkpoint = (
+        root / "bioclip" / "final" / "checkpoints" / "best.pt"
+    )
+    final_bioclip_metrics = root / "bioclip" / "final" / "metrics" / "best.json"
+    _step(
+        "train:bioclip-long-final-all-seen",
+        _train_command(final_bioclip_config, gpus),
+        [final_bioclip_checkpoint, final_bioclip_metrics],
+        resume=resume,
+        state=state,
+        state_path=state_path,
+    )
+    finetuned_final_gate = root / "final" / "gate_finetuned_bioclip.json"
+    _step(
+        "calibrate-gate:finetuned-bioclip-final-temperature",
+        _python_command(
+            "calibrate-gate",
+            "--config",
+            configs["final"],
+            "--checkpoint",
+            str(final_checkpoint),
+            "--bioclip-checkpoint",
+            str(final_bioclip_checkpoint),
+            "--threshold-source",
+            str(finetuned_calibration_gate),
+            "--output",
+            str(finetuned_final_gate),
+        ),
+        [finetuned_final_gate],
         resume=resume,
         state=state,
         state_path=state_path,
     )
 
     submission_specs = {
-        "hard_routed": {
+        "pretrained_bioclip_hard_routed": {
             "test_config": configs["hard_seen"],
-            "unseen_config": configs["hard_unseen"],
+            "unseen_config": configs["hard_unseen_pretrained"],
             "gated": False,
+            "gate": None,
+            "bioclip_checkpoint": None,
         },
-        "confidence_gated": {
+        "pretrained_bioclip_confidence_gated": {
             "test_config": configs["gated"],
             "unseen_config": configs["gated"],
             "gated": True,
+            "gate": str(pretrained_final_gate),
+            "bioclip_checkpoint": None,
+        },
+        "finetuned_bioclip_hard_routed": {
+            "test_config": configs["hard_seen"],
+            "unseen_config": configs["hard_unseen_finetuned"],
+            "gated": False,
+            "gate": None,
+            "bioclip_checkpoint": str(final_bioclip_checkpoint),
+        },
+        "finetuned_bioclip_confidence_gated": {
+            "test_config": configs["gated"],
+            "unseen_config": configs["gated"],
+            "gated": True,
+            "gate": str(finetuned_final_gate),
+            "bioclip_checkpoint": str(final_bioclip_checkpoint),
         },
     }
     for submission_name, submission in submission_specs.items():
@@ -421,7 +578,7 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
                     "--checkpoint",
                     str(final_checkpoint),
                     "--gate",
-                    str(final_gate),
+                    str(submission["gate"]),
                     "--split",
                     split,
                     "--output",
@@ -438,6 +595,15 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
                     split,
                     "--output",
                     str(output),
+                )
+            if submission["bioclip_checkpoint"] is not None and (
+                submission["gated"] or split == "unseen"
+            ):
+                command.extend(
+                    [
+                        "--bioclip-checkpoint",
+                        str(submission["bioclip_checkpoint"]),
+                    ]
                 )
             _step(
                 f"infer:{submission_name}:{split}",
@@ -490,8 +656,15 @@ def run_hybrid_pipeline(spec_path: str | Path, *, resume: bool = False) -> dict[
     summary = {
         "selected_recipe": selected["name"],
         "selected_parameters": selected["parameters"],
-        "threshold_selection": selected["gate_report"]["metrics"],
-        "final_gate": read_json(final_gate),
+        "pretrained_threshold_selection": selected["gate_report"]["metrics"],
+        "finetuned_threshold_selection": read_json(
+            finetuned_calibration_gate
+        )["metrics"],
+        "final_gates": {
+            "pretrained_bioclip": read_json(pretrained_final_gate),
+            "finetuned_bioclip": read_json(finetuned_final_gate),
+        },
+        "finetuned_bioclip_checkpoint": str(final_bioclip_checkpoint),
         "submissions": plan["submission_outputs"],
         "official_unseen_labels_used_for_selection": False,
     }

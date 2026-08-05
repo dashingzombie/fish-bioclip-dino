@@ -101,10 +101,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     calibrate_gate.add_argument("--output", required=True)
     calibrate_gate.add_argument("--threshold-source")
+    calibrate_gate.add_argument("--bioclip-checkpoint")
     infer = _config_parser(commands, "infer", checkpoint=True)
     infer.add_argument("--split", choices=("test", "unseen"))
     infer.add_argument("--output", required=True)
     infer.add_argument("--calibration")
+    infer.add_argument("--bioclip-checkpoint")
     infer.add_argument("--selection-report")
     infer.add_argument(
         "--purpose", choices=("seen", "unseen", "joint")
@@ -114,6 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     infer_gated.add_argument("--split", choices=("test", "unseen"), required=True)
     infer_gated.add_argument("--gate", required=True)
+    infer_gated.add_argument("--bioclip-checkpoint")
     infer_gated.add_argument("--output", required=True)
     verify_unseen = _config_parser(
         commands, "verify-unseen-inference", checkpoint=True
@@ -495,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
             args.checkpoint,
             args.output,
             threshold_source=args.threshold_source,
+            bioclip_checkpoint_path=args.bioclip_checkpoint,
         )
         print(json.dumps(result, sort_keys=True))
     elif args.command == "infer":
@@ -504,7 +508,12 @@ def main(argv: list[str] | None = None) -> int:
         if split not in {"test", "unseen"}:
             raise ValueError("Set --split or evaluation.official_split to test/unseen")
         result = predict_split(
-            config, args.checkpoint, args.output, split=split, calibration_path=args.calibration
+            config,
+            args.checkpoint,
+            args.output,
+            split=split,
+            calibration_path=args.calibration,
+            bioclip_checkpoint_path=args.bioclip_checkpoint,
         )
         print(json.dumps({"predictions": len(result), "output": args.output}))
     elif args.command == "infer-gated":
@@ -516,6 +525,7 @@ def main(argv: list[str] | None = None) -> int:
             args.gate,
             args.output,
             split=args.split,
+            bioclip_checkpoint_path=args.bioclip_checkpoint,
         )
         print(json.dumps({"predictions": len(result), "output": args.output}))
     elif args.command == "verify-unseen-inference":

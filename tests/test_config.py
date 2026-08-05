@@ -45,8 +45,10 @@ def test_priority_bioclip_configs_are_explicit_and_loadable() -> None:
 def test_hybrid_config_is_full_dino_with_scientific_name_fallback() -> None:
     config = load_config("configs/hybrid/dino_seen.yaml")
     assert config["training"]["stage"] == "dino_seen_classifier"
+    assert config["training"]["max_steps"] == 16000
     assert config["model"]["dino"]["trainable_scope"] == "full"
     assert config["loss"]["supervised_species"]["enabled"]
+    assert config["loss"]["supervised_species"]["label_smoothing"] == 0.1
     assert not config["loss"]["dino_text_classification"]["enabled"]
     weights = config["text"]["prototype_ensemble"]["weights"]
     assert weights["scientific_name"] == 1.0
@@ -55,6 +57,20 @@ def test_hybrid_config_is_full_dino_with_scientific_name_fallback() -> None:
         for name, value in weights.items()
         if name != "scientific_name"
     )
+    assert config["validation"]["pseudo_unseen"]["split_seed"] == 42
+
+
+def test_long_bioclip_config_preserves_text_and_zero_shot_alignment() -> None:
+    config = load_config("configs/hybrid/bioclip_long.yaml")
+    assert config["training"]["stage"] == "bioclip_full_finetune"
+    assert config["training"]["max_steps"] == 20000
+    assert config["model"]["tuning_mode"] == "full_finetune"
+    assert config["model"]["bioclip"]["freeze_text_encoder"]
+    assert not config["model"]["bioclip"]["freeze_image_encoder"]
+    assert config["loss"]["native_bioclip_text"]["enabled"]
+    assert config["loss"]["bioclip_pretrained_distillation"]["enabled"]
+    assert config["loss"]["bioclip_supervised_species"]["label_smoothing"] == 0.1
+    assert config["validation"]["unseen_selection_branch"] == "bioclip_native"
     assert config["validation"]["pseudo_unseen"]["split_seed"] == 42
 
 

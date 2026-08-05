@@ -19,6 +19,9 @@ from fish_vlm.evaluation.gating import (
     fit_confidence_gate,
     threshold_for_acceptance_rate,
 )
+from fish_vlm.inference.bioclip_checkpoint import (
+    load_finetuned_bioclip_visual,
+)
 from fish_vlm.training.checkpoint import (
     checkpoint_training_species,
     load_checkpoint,
@@ -82,6 +85,7 @@ def _threshold_grid(config: dict[str, Any]) -> list[float]:
 def _collect_gate_validation(
     config: dict[str, Any],
     checkpoint_path: str | Path,
+    bioclip_checkpoint_path: str | Path | None = None,
 ) -> tuple[
     torch.Tensor,
     torch.Tensor,
@@ -89,6 +93,7 @@ def _collect_gate_validation(
     list[str],
     list[str],
     dict[str, Any],
+    dict[str, Any] | None,
 ]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     bundle = build_runtime(config, device=device)
@@ -98,15 +103,16 @@ def _collect_gate_validation(
     canonical_prompts = read_json(
         _data_processed_path(config, "canonical_prompts.json")
     )
+    canonical_prompt_hash = prompts_hash(
+        canonical_prompts, bundle.partitions.all_species
+    )
     checkpoint = load_checkpoint(
         checkpoint_path,
         bundle.model,
         expected_seen_species=bundle.partitions.seen_species,
         expected_unseen_species=bundle.partitions.unseen_species,
         expected_text_prototype_hash=cache["prompt_hash"],
-        expected_canonical_prompt_hash=prompts_hash(
-            canonical_prompts, bundle.partitions.all_species
-        ),
+        expected_canonical_prompt_hash=canonical_prompt_hash,
         expected_dino_model_name=str(config["model"]["dino"]["name"]),
         expected_dino_checkpoint_source=bundle.dino_source,
         expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
@@ -116,6 +122,20 @@ def _collect_gate_validation(
     supervised_species = checkpoint_training_species(
         checkpoint, seen_species=bundle.partitions.seen_species
     )
+    finetuned_bioclip = None
+    if bioclip_checkpoint_path is not None:
+        if bundle.model.bioclip is None:
+            raise ValueError("Fine-tuned BioCLIP fallback is unavailable")
+        finetuned_bioclip = load_finetuned_bioclip_visual(
+            bioclip_checkpoint_path,
+            bundle.model.bioclip,
+            expected_seen_species=bundle.partitions.seen_species,
+            expected_unseen_species=bundle.partitions.unseen_species,
+            expected_training_species=supervised_species,
+            expected_text_prototype_hash=cache["prompt_hash"],
+            expected_canonical_prompt_hash=canonical_prompt_hash,
+            expected_bioclip_checkpoint=bundle.bioclip_checkpoint,
+        )
     labels = load_labels(config)
     _, validation_names = _split_labelled_filenames(
         split_filenames(data_path(config, "train_split")),
@@ -158,6 +178,7 @@ def _collect_gate_validation(
         candidate_species,
         supervised_species,
         checkpoint,
+        finetuned_bioclip,
     )
 
 
@@ -178,6 +199,7 @@ def calibrate_gate_checkpoint(
     output_path: str | Path,
     *,
     threshold_source: str | Path | None = None,
+    bioclip_checkpoint_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Select a pseudo-unseen threshold or transfer it to the final model."""
     (
@@ -187,7 +209,12 @@ def calibrate_gate_checkpoint(
         candidate_species,
         supervised_species,
         checkpoint,
-    ) = _collect_gate_validation(config, checkpoint_path)
+        finetuned_bioclip,
+    ) = _collect_gate_validation(
+        config,
+        checkpoint_path,
+        bioclip_checkpoint_path,
+    )
     candidate_to_index = {
         name: index for index, name in enumerate(candidate_species)
     }
@@ -241,6 +268,16 @@ def calibrate_gate_checkpoint(
         }
     else:
         source = _read_gate(threshold_source)
+        source_bioclip_checkpoint = source.get("metadata", {}).get(
+            "bioclip_fallback_checkpoint"
+        )
+        if (bioclip_checkpoint_path is None) != (
+            source_bioclip_checkpoint is None
+        ):
+            raise ValueError(
+                "Threshold source and final gate must use the same BioCLIP "
+                "fallback variant"
+            )
         if set(supervised_species) != set(candidate_species):
             raise ValueError(
                 "Final gate recalibration requires DINO trained on every seen species"
@@ -296,7 +333,21 @@ def calibrate_gate_checkpoint(
             "supervised_species": supervised_species,
             "threshold_origin": threshold_origin,
             "official_unseen_labels_used": False,
-            "fallback": "frozen_bioclip_scientific_name_all_candidates",
+            "fallback": (
+                "finetuned_bioclip_scientific_name_all_candidates"
+                if bioclip_checkpoint_path is not None
+                else "pretrained_bioclip_scientific_name_all_candidates"
+            ),
+            "bioclip_fallback_checkpoint": (
+                None
+                if bioclip_checkpoint_path is None
+                else str(bioclip_checkpoint_path)
+            ),
+            "bioclip_fallback_checkpoint_step": (
+                None
+                if finetuned_bioclip is None
+                else int(finetuned_bioclip["step"])
+            ),
         },
     }
     report["hash"] = stable_json_hash(report)

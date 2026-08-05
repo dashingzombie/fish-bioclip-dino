@@ -123,7 +123,14 @@ def compute_total_loss(
     if section.get("enabled", False):
         if output.supervised_logits is None:
             raise ValueError("Enabled supervised loss requires the supervised head")
-        add("supervised_species", supervised_species_loss(output.supervised_logits, targets))
+        add(
+            "supervised_species",
+            supervised_species_loss(
+                output.supervised_logits,
+                targets,
+                label_smoothing=float(section.get("label_smoothing", 0.0)),
+            ),
+        )
     section = config.get("native_bioclip_text", {})
     if section.get("enabled", False):
         if output.bioclip_logits is None:
@@ -141,7 +148,9 @@ def compute_total_loss(
         add(
             "bioclip_supervised_species",
             supervised_species_loss(
-                output.bioclip_supervised_logits, targets
+                output.bioclip_supervised_logits,
+                targets,
+                label_smoothing=float(section.get("label_smoothing", 0.0)),
             ),
         )
     section = config.get("bioclip_pretrained_distillation", {})

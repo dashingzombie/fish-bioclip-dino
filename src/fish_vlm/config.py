@@ -190,6 +190,17 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ConfigError(
                 "dino_seen_classifier requires frozen BioCLIP"
             )
+    for loss_name in (
+        "supervised_species",
+        "bioclip_supervised_species",
+    ):
+        smoothing = float(
+            config["loss"].get(loss_name, {}).get("label_smoothing", 0.0)
+        )
+        if not 0.0 <= smoothing < 1.0:
+            raise ConfigError(
+                f"loss.{loss_name}.label_smoothing must be in [0, 1)"
+            )
     enabled_hard_negatives: list[str] = []
     for loss_name in (
         "dino_text_classification",

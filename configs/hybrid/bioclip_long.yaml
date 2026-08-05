@@ -1,0 +1,66 @@
+defaults: [dino_seen.yaml]
+
+output_dir: outputs/hybrid/bioclip/calibration
+
+model:
+  backbone: bioclip2
+  tuning_mode: full_finetune
+  unfreeze_last_blocks: 0
+  dino:
+    trainable_scope: frozen
+  supervised_head:
+    enabled: false
+  bioclip:
+    freeze_text_encoder: true
+    freeze_image_encoder: false
+  bioclip_image_path:
+    enabled: true
+    mode: frozen_zero_shot
+    text_space: native
+    adapter:
+      enabled: false
+  bioclip_classifier:
+    enabled: true
+    feature_space: native
+
+optimiser:
+  backbone_lr: 3.0e-7
+  classifier_lr: 1.0e-4
+  backbone_weight_decay: 0.01
+
+training:
+  stage: bioclip_full_finetune
+  max_steps: 20000
+  validation_interval_steps: 500
+  early_stopping_patience_evaluations: 30
+  batch_size: 128
+  checkpoint_name: best.pt
+  metrics_name: best.json
+  resume_checkpoint: null
+
+loss:
+  dino_text_classification: {enabled: false, weight: 1.0}
+  bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: false, weight: 1.0, label_smoothing: 0.0}
+  native_bioclip_text: {enabled: true, weight: 1.0}
+  bioclip_supervised_species: {enabled: true, weight: 0.25, label_smoothing: 0.1}
+  bioclip_pretrained_distillation: {enabled: true, weight: 1.0}
+  representation_distillation: {enabled: false, weight: 0.5}
+  genus_supervised: {enabled: false, weight: 0.1}
+  family_supervised: {enabled: false, weight: 0.05}
+  branch_consistency: {enabled: false, weight: 0.05, method: js}
+
+validation:
+  selection_branch: bioclip_native
+  unseen_selection_branch: bioclip_native
+  selection_metric: seen_unseen_harmonic_mean
+
+inference:
+  generalised_enabled: true
+  test: {candidate_set: all, mode: bioclip_native}
+  unseen: {candidate_set: all, mode: bioclip_native}
+
+wandb:
+  group: bioclip-long-full-finetune
+  name: bioclip-long-pseudo-unseen
+  tags: [fish, bioclip, full-finetune, long, alignment-preserving]

@@ -1,7 +1,9 @@
+import pytest
 import torch
 
 from fish_vlm.losses.consistency import branch_consistency_loss
 from fish_vlm.losses.image_teacher import cosine_teacher_loss, symmetric_contrastive_teacher_loss
+from fish_vlm.losses.supervised import supervised_species_loss
 from fish_vlm.losses.total import compute_total_loss
 from fish_vlm.models.multimodal import ModelOutput
 from fish_vlm.training.metrics import distributed_classification_metrics
@@ -36,3 +38,14 @@ def test_ddp_safe_metric_path_without_process_group() -> None:
     metrics = distributed_classification_metrics(scores, targets, prefix="branch")
     assert metrics["branch_accuracy"] == 1.0
     assert metrics["branch_top5_accuracy"] == 1.0
+
+
+def test_supervised_loss_supports_label_smoothing() -> None:
+    logits = torch.tensor([[5.0, 0.0], [0.0, 5.0]])
+    targets = torch.tensor([0, 1])
+    plain = supervised_species_loss(logits, targets)
+    smoothed = supervised_species_loss(logits, targets, label_smoothing=0.1)
+    assert torch.isfinite(smoothed)
+    assert smoothed > plain
+    with pytest.raises(ValueError, match="label_smoothing"):
+        supervised_species_loss(logits, targets, label_smoothing=1.0)

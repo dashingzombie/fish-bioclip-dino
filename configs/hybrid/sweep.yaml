@@ -1,8 +1,11 @@
 base_config: configs/hybrid/dino_seen.yaml
 output_root: outputs/hybrid
 
-# Six controlled full-DINO recipes. The confidence threshold is searched at
-# 0.005 increments for every recipe on the same seed-42 species holdout.
+# Six controlled full-DINO recipes, each trained for up to 16,000 steps with
+# label smoothing and longer early stopping. Confidence thresholds use the
+# same seed-42 species holdout.
+finetuned_bioclip_config: configs/hybrid/bioclip_long.yaml
+
 recipes:
   - name: dino_lr1e-6_head1e-4
     overrides: {optimiser.backbone_lr: 1.0e-6, optimiser.classifier_lr: 1.0e-4}
