@@ -23,7 +23,7 @@ def build_image_teacher_cache(
     device: torch.device | str,
     storage_dtype: torch.dtype = torch.float16,
 ) -> dict[str, Any]:
-    """Cache labelled training images only, reusing a valid cache."""
+    """Cache deterministic image embeddings, including image-only samples."""
     embeddings: list[torch.Tensor] = []
     filenames: list[str] = []
     if Path(output_path).exists():
@@ -42,8 +42,6 @@ def build_image_teacher_cache(
     model = model.to(device).eval()
     for batch in loader:
         batch_names = list(batch["filename"])
-        if batch.get("species_index") is None:
-            raise ValueError("Teacher cache accepts only labelled training batches")
         embeddings.append(
             encode_bioclip_images(model, batch["bioclip_image"].to(device)).cpu()
         )

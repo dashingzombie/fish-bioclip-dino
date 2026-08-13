@@ -72,6 +72,12 @@ def build_parser() -> argparse.ArgumentParser:
     _config_parser(commands, "build-text-prototypes")
     _config_parser(commands, "build-image-cache")
     _config_parser(commands, "build-teacher-cache")
+    _config_parser(commands, "build-all-teacher-cache")
+    _config_parser(commands, "prepare-domain-data")
+    dino_domain = _config_parser(commands, "train-dino-domain")
+    dino_domain.add_argument("--resume", action="store_true")
+    bioclip_domain = _config_parser(commands, "train-bioclip-domain")
+    bioclip_domain.add_argument("--resume", action="store_true")
     _config_parser(commands, "make-pseudo-unseen")
     _config_parser(commands, "train")
     evaluate = _config_parser(commands, "evaluate", checkpoint=True)
@@ -295,6 +301,64 @@ def _build_teacher(config: dict[str, Any]) -> None:
     )
 
 
+def _build_all_teacher(config: dict[str, Any]) -> None:
+    """Cache original BioCLIP embeddings for the exact all-image union."""
+    filenames = list(
+        dict.fromkeys(
+            name
+            for split in ("train", "test", "unseen")
+            for name in split_filenames(data_path(config, f"{split}_split"))
+        )
+    )
+    output_path = _cache_path(config, "bioclip_images", "all_embeddings.pt")
+    checkpoint = config["model"]["bioclip"]["checkpoint"]
+    if output_path.exists():
+        load_image_teacher_cache(
+            output_path,
+            expected_filenames=filenames,
+            checkpoint=checkpoint,
+            transform_hash=None,
+        )
+        return
+    bundle = build_runtime(config, device="cpu")
+    if bundle.model.bioclip is None:
+        raise ValueError("All-image teacher cache requires the BioCLIP image path")
+    dataset = FishMultiViewDataset(
+        filenames,
+        data_path(config, "images_dir"),
+        bundle.dino_eval_transform,
+        bundle.bioclip_eval_transform,
+        labels=None,
+        species_to_index=None,
+        image_cache=load_runtime_image_cache(
+            config, bundle, filenames, training=False
+        ),
+    )
+    from torch.utils.data import DataLoader
+
+    loader = DataLoader(
+        dataset,
+        batch_size=int(config["training"]["eval_batch_size"]),
+        shuffle=False,
+        num_workers=int(config["training"].get("num_workers", 4)),
+        collate_fn=collate_multiview,
+    )
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    build_image_teacher_cache(
+        bundle.model.bioclip,
+        loader,
+        checkpoint=bundle.bioclip_checkpoint,
+        transform_hash=transform_fingerprint(bundle.bioclip_eval_transform),
+        output_path=output_path,
+        device=device,
+        storage_dtype=(
+            torch.bfloat16
+            if config["training"].get("teacher_cache_dtype") == "bfloat16"
+            else torch.float16
+        ),
+    )
+
+
 def _image_split_filenames(config: dict[str, Any]) -> dict[str, list[str]]:
     return {
         split: validate_image_filenames(
@@ -459,6 +523,21 @@ def main(argv: list[str] | None = None) -> int:
         _build_image_caches(config)
     elif args.command == "build-teacher-cache":
         _build_teacher(config)
+    elif args.command == "build-all-teacher-cache":
+        _build_all_teacher(config)
+    elif args.command == "prepare-domain-data":
+        from fish_vlm.domain.data import build_domain_manifest
+
+        manifest = build_domain_manifest(config)
+        print(json.dumps({"manifest": config["domain"]["manifest_path"], "hash": manifest["manifest_hash"]}))
+    elif args.command == "train-dino-domain":
+        from fish_vlm.domain.dino import train_dino_domain
+
+        print(json.dumps(train_dino_domain(config, resume=args.resume), sort_keys=True))
+    elif args.command == "train-bioclip-domain":
+        from fish_vlm.domain.bioclip import train_bioclip_domain
+
+        print(json.dumps(train_bioclip_domain(config, resume=args.resume), sort_keys=True))
     elif args.command == "make-pseudo-unseen":
         partitions = ensure_partitions(config)
         pseudo = config["validation"]["pseudo_unseen"]

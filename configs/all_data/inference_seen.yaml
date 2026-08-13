@@ -1,0 +1,7 @@
+defaults: [dino_finetune.yaml]
+
+inference:
+  generalised_enabled: false
+  hybrid_dino_seen_checkpoint: true
+  test: {candidate_set: seen, mode: supervised}
+  unseen: {candidate_set: unseen, mode: bioclip_native}

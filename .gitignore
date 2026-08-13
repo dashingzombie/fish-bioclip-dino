@@ -22,5 +22,6 @@ outputs/sweep_pipelines/*
 *.err
 outputs/slurm/**/*.sh
 outputs/pipeline/workflow_state.json
+outputs/all_data/*
 *.npy
 cache/*

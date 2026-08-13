@@ -1,0 +1,8 @@
+defaults: [common.yaml]
+
+model:
+  backbone: bioclip2
+  tuning_mode: full_finetune
+  bioclip:
+    freeze_text_encoder: true
+    freeze_image_encoder: false

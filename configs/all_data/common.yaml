@@ -1,0 +1,126 @@
+defaults: [../base.yaml, ../slurm/genome.yaml]
+
+cache_dir: cache
+output_dir: outputs/all_data
+
+data:
+  deterministic_transform_cache:
+    enabled: false
+
+text:
+  prototype_ensemble:
+    enabled: true
+    weights:
+      scientific_name: 0.30
+      taxonomic_hierarchy: 0.15
+      morphology_only: 0.15
+      morphology_taxonomy: 0.20
+      full_description: 0.20
+
+model:
+  tuning_mode: frozen
+  dino:
+    trainable_scope: frozen
+  supervised_head:
+    enabled: false
+  bioclip:
+    freeze_text_encoder: true
+    freeze_image_encoder: true
+  bioclip_image_path:
+    enabled: true
+    mode: frozen_zero_shot
+    text_space: native
+    adapter: {enabled: false}
+  bioclip_classifier:
+    enabled: false
+
+training:
+  stage: projection_only
+  max_steps: 4000
+  validation_interval_steps: 250
+  batch_size: 32
+  eval_batch_size: 64
+  num_workers: 8
+  eval_num_workers: 4
+  early_stopping_patience_evaluations: 30
+  conservative_augmentation: false
+  distributed:
+    enabled: false
+
+validation:
+  seen_fraction: 0.10
+  selection_branch: bioclip_native
+  selection_metric: seen_unseen_harmonic_mean
+  pseudo_unseen:
+    enabled: true
+    strategy: species_holdout
+    split_seed: 42
+    holdout_fraction: 0.20
+    seeds: [42]
+    split_path: auto
+
+inference:
+  generalised_enabled: false
+  hybrid_dino_seen_checkpoint: true
+  test: {candidate_set: seen, mode: supervised}
+  unseen: {candidate_set: unseen, mode: bioclip_native}
+
+domain:
+  validation_fraction: 0.10
+  manifest_path: outputs/all_data/domain_manifest.json
+  prompt_inventory_path: outputs/all_data/prompt_inventory.json
+  dino_output_dir: outputs/all_data/dino_domain
+  bioclip_output_dir: outputs/all_data/bioclip_domain
+  dino:
+    max_epochs: 300
+    early_stopping_patience_epochs: 30
+    batch_size: 16
+    eval_batch_size: 32
+    num_workers: 8
+    global_crops: 2
+    local_crops: 4
+    head_hidden_dim: 2048
+    head_output_dim: 4096
+    backbone_lr: 1.0e-5
+    head_lr: 1.0e-4
+    weight_decay: 0.04
+    teacher_momentum: 0.996
+    center_momentum: 0.90
+    student_temperature: 0.10
+    teacher_temperature: 0.04
+    gradient_clip_norm: 3.0
+    use_amp: true
+  bioclip:
+    max_epochs: 200
+    partial_epochs: 10
+    early_stopping_patience_epochs: 30
+    batch_size: 32
+    eval_batch_size: 64
+    num_workers: 8
+    unfreeze_last_blocks: 2
+    visual_lr: 3.0e-7
+    weight_decay: 0.01
+    logit_scale: 20.0
+    text_alignment_weight: 1.0
+    distillation_weight: 1.0
+    consistency_weight: 0.25
+    hard_negative_weight: 0.20
+    hard_negative_top_k: 8
+    hard_negative_margin: 0.10
+    gradient_clip_norm: 1.0
+    use_amp: true
+
+slurm:
+  gpus: 1
+  cpus: 16
+  memory: 96G
+  time_limit: "36:00:00"
+  job_name: fish-all-data
+  log_dir: outputs/all_data/slurm
+  script_dir: outputs/all_data/slurm
+  node_cache_dir: fish-all-data-cache
+
+workflow:
+  cpus: 16
+  memory: 96G
+  time_limit: "36:00:00"

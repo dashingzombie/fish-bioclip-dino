@@ -24,12 +24,15 @@ def _node_tmpdir_lines() -> list[str]:
 
 
 def _cache_items(scope: str) -> list[str]:
+    if scope == "dino_domain":
+        return ["torch"]
     if scope == "training":
         return [
             "huggingface",
             "torch",
             "text",
             "bioclip_images/train_embeddings.pt",
+            "bioclip_images/all_embeddings.pt",
             "image_transforms/train/manifest.json",
             "image_transforms/train/dino.npy",
             "image_transforms/train/bioclip.npy",
@@ -123,7 +126,9 @@ def _cache_setup_lines(config: dict[str, Any], *, scope: str) -> list[str]:
     return lines
 
 
-def _image_setup_lines(config: dict[str, Any]) -> list[str]:
+def _image_setup_lines(
+    config: dict[str, Any], *, missing_image_cache_only: bool = True
+) -> list[str]:
     """Stream only split-referenced raw images to node-local NVMe."""
     data = config["data"]
     images_dir = Path(str(data["images_dir"]))
@@ -142,7 +147,8 @@ def _image_setup_lines(config: dict[str, Any]) -> list[str]:
             'FISH_VLM_IMAGES_DIR="${NODE_TMPDIR}/fish-vlm-images"',
             'mkdir -p "${FISH_VLM_IMAGES_DIR}"',
             f'python -m fish_vlm.cli list-images --config {config_path} '
-            f'--output "${{IMAGE_LIST}}" --missing-image-cache-only',
+            f'--output "${{IMAGE_LIST}}"'
+            + (" --missing-image-cache-only" if missing_image_cache_only else ""),
             'tar --directory="${SHARED_IMAGES_DIR}" --create --file=- '
             '--null --verbatim-files-from --files-from="${IMAGE_LIST}" '
             '| tar --directory="${FISH_VLM_IMAGES_DIR}" --extract --file=-',
@@ -158,6 +164,7 @@ def _append_runtime_setup(
     *,
     cache_scope: str,
     stage_images: bool,
+    stage_all_images: bool = False,
 ) -> None:
     slurm = config["slurm"]
     lines.extend(
@@ -184,7 +191,11 @@ def _append_runtime_setup(
     )
     lines.extend(_cache_setup_lines(config, scope=cache_scope))
     if stage_images:
-        lines.extend(_image_setup_lines(config))
+        lines.extend(
+            _image_setup_lines(
+                config, missing_image_cache_only=not stage_all_images
+            )
+        )
 
 
 def render_batch_script(config: dict[str, Any], training_config: str) -> str:
@@ -252,6 +263,7 @@ def render_workflow_batch_script(
     gpus: int,
     cache_scope: str = "training",
     stage_images: bool = False,
+    stage_all_images: bool = False,
 ) -> str:
     """Render one dependency-chain workflow job containing explicit commands."""
     slurm = config["slurm"]
@@ -283,6 +295,7 @@ def render_workflow_batch_script(
         config,
         cache_scope=cache_scope,
         stage_images=stage_images,
+        stage_all_images=stage_all_images,
     )
     lines.extend(["", *(shlex.join(command) for command in commands)])
     return "\n".join(lines) + "\n"

@@ -1,0 +1,68 @@
+defaults: [common.yaml]
+
+output_dir: outputs/all_data/dino_final
+
+model:
+  tuning_mode: frozen
+  dino:
+    checkpoint_path: outputs/all_data/dino_domain/checkpoints/best.pt
+    trainable_scope: full
+  supervised_head:
+    enabled: true
+  bioclip:
+    freeze_text_encoder: true
+    freeze_image_encoder: true
+  bioclip_classifier:
+    enabled: false
+
+optimiser:
+  backbone_lr: 3.0e-6
+  classifier_lr: 3.0e-4
+  backbone_weight_decay: 0.01
+
+training:
+  stage: dino_seen_classifier
+  max_steps: 200000
+  max_epochs: 200
+  validation_interval_steps: 1000
+  validation_interval_epochs: 1.0
+  batch_size: 32
+  eval_batch_size: 64
+  gradient_accumulation_steps: 2
+  early_stopping_patience_evaluations: 30
+  checkpoint_name: best.pt
+  metrics_name: best.json
+  conservative_augmentation: false
+  augmentation_profile: fish_multiview_global
+  class_balanced_sampling: true
+  distributed:
+    enabled: false
+
+loss:
+  dino_text_classification: {enabled: false, weight: 1.0}
+  bioclip_image_teacher: {enabled: false, weight: 0.25, method: cosine, mode: cached}
+  supervised_species: {enabled: true, weight: 1.0, label_smoothing: 0.1}
+  native_bioclip_text: {enabled: false, weight: 1.0}
+  bioclip_supervised_species: {enabled: false, weight: 1.0}
+  bioclip_pretrained_distillation: {enabled: false, weight: 1.0}
+  representation_distillation: {enabled: false, weight: 0.5}
+  genus_supervised: {enabled: false, weight: 0.1}
+  family_supervised: {enabled: false, weight: 0.05}
+  branch_consistency: {enabled: false, weight: 0.05, method: js}
+
+validation:
+  seen_fraction: 0.10
+  selection_branch: supervised
+  selection_metric: seen_accuracy
+  pseudo_unseen:
+    enabled: false
+    strategy: species_holdout
+    split_seed: 42
+    holdout_fraction: 0.20
+    seeds: [42]
+    split_path: null
+
+wandb:
+  group: all-data-dino
+  name: dino-seen-after-domain-adaptation
+  tags: [fish, dino, all-image-domain-adaptation, seen-classifier]

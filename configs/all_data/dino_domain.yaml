@@ -1,0 +1,5 @@
+defaults: [common.yaml]
+
+model:
+  dino:
+    trainable_scope: full

@@ -13,7 +13,7 @@ from typing import Any
 
 import torch
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, WeightedRandomSampler
 
 from fish_vlm.config import data_path
 from fish_vlm.data.catalog import load_labels, split_filenames
@@ -359,6 +359,7 @@ def make_loader(
             bundle.model.dino,
             training=training,
             conservative=bool(config["training"].get("conservative_augmentation", True)),
+            augmentation_profile=config["training"].get("augmentation_profile"),
         ),
         bundle.bioclip_eval_transform,
         labels=labels,
@@ -371,6 +372,21 @@ def make_loader(
         ),
     )
     sampler = DistributedSampler(dataset, shuffle=training) if context.world_size > 1 else None
+    loader_sampler: Any = sampler
+    if (
+        training
+        and context.world_size == 1
+        and bool(config["training"].get("class_balanced_sampling", False))
+        and labels is not None
+    ):
+        counts: dict[str, int] = {}
+        for filename in filenames:
+            if filename in labels:
+                counts[labels[filename]] = counts.get(labels[filename], 0) + 1
+        weights = [1.0 / counts[labels[name]] for name in filenames]
+        loader_sampler = WeightedRandomSampler(
+            weights, num_samples=len(weights), replacement=True
+        )
     worker_key = "num_workers" if training else "eval_num_workers"
     workers = int(
         config["training"].get(
@@ -381,8 +397,8 @@ def make_loader(
     loader = DataLoader(
         dataset,
         batch_size=int(config["training"]["batch_size"] if training else config["training"]["eval_batch_size"]),
-        shuffle=training and sampler is None,
-        sampler=sampler,
+        shuffle=training and loader_sampler is None,
+        sampler=loader_sampler,
         num_workers=workers,
         persistent_workers=bool(config["training"].get("persistent_workers", True)) and workers > 0,
         pin_memory=context.device.type == "cuda",
@@ -807,8 +823,20 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
         hard_negative_context["visual_similarity"] = (
             visual_centroids @ visual_centroids.T
         )
+    accumulation_steps = int(config["training"].get("gradient_accumulation_steps", 1))
+    if accumulation_steps < 1:
+        raise ValueError("training.gradient_accumulation_steps must be at least 1")
     max_steps = int(config["training"]["max_steps"])
     validation_interval = int(config["training"]["validation_interval_steps"])
+    if config["training"].get("max_epochs") is not None:
+        import math
+
+        steps_per_epoch = max(1, math.ceil(len(train_loader) / accumulation_steps))
+        max_steps = steps_per_epoch * int(config["training"]["max_epochs"])
+        validation_epochs = float(
+            config["training"].get("validation_interval_epochs", 1.0)
+        )
+        validation_interval = max(1, round(steps_per_epoch * validation_epochs))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=max_steps
     )
@@ -843,9 +871,6 @@ def train_from_config(config: dict[str, Any]) -> dict[str, float]:
             trainable_parameters=trainable_parameter_count(bundle.model),
         )
     best_metrics: dict[str, float] = {}
-    accumulation_steps = int(config["training"].get("gradient_accumulation_steps", 1))
-    if accumulation_steps < 1:
-        raise ValueError("training.gradient_accumulation_steps must be at least 1")
     global_step = 0
     data_pass = 0
     if train_sampler is not None:

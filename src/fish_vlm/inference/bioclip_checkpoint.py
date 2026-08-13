@@ -17,14 +17,21 @@ EXPECTED_FINETUNE_LOSSES = [
     "bioclip_supervised_species",
     "bioclip_pretrained_distillation",
 ]
+EXPECTED_DOMAIN_ADAPTATION_LOSSES = [
+    "native_bioclip_text",
+    "bioclip_pretrained_distillation",
+    "bioclip_multiview_consistency",
+    "prototype_hard_negative",
+]
 
 
-def _validate_finetune_contract(checkpoint: dict[str, Any]) -> None:
+def _validate_finetune_contract(checkpoint: dict[str, Any]) -> bool:
     resolved = checkpoint.get("resolved_configuration")
     if not isinstance(resolved, dict):
         raise ValueError("BioCLIP checkpoint lacks its resolved configuration")
-    if resolved.get("training", {}).get("stage") != "bioclip_full_finetune":
-        raise ValueError("BioCLIP checkpoint is not a full fine-tune")
+    stage = resolved.get("training", {}).get("stage")
+    if stage not in {"bioclip_full_finetune", "bioclip_domain_adaptation"}:
+        raise ValueError("BioCLIP checkpoint is not a supported visual fine-tune")
     model = resolved.get("model", {})
     bioclip = model.get("bioclip", {})
     if (
@@ -35,11 +42,20 @@ def _validate_finetune_contract(checkpoint: dict[str, Any]) -> None:
         raise ValueError(
             "BioCLIP checkpoint does not prove visual-only full fine-tuning"
         )
-    if checkpoint.get("active_losses") != EXPECTED_FINETUNE_LOSSES:
+    expected_losses = (
+        EXPECTED_DOMAIN_ADAPTATION_LOSSES
+        if stage == "bioclip_domain_adaptation"
+        else EXPECTED_FINETUNE_LOSSES
+    )
+    if checkpoint.get("active_losses") != expected_losses:
         raise ValueError(
-            "BioCLIP checkpoint lacks the required text, supervised, and "
-            "pretrained-distillation losses"
+            "BioCLIP checkpoint lacks the required alignment-preserving losses"
         )
+    if stage == "bioclip_domain_adaptation" and checkpoint.get(
+        "bioclip_classifier_state"
+    ) is not None:
+        raise ValueError("BioCLIP domain adaptation must not contain a classifier head")
+    return stage == "bioclip_domain_adaptation"
 
 
 def load_finetuned_bioclip_visual(
@@ -65,16 +81,32 @@ def load_finetuned_bioclip_visual(
             "BioCLIP checkpoint uses an unsupported metadata schema; missing "
             f"{sorted(missing_metadata)}"
         )
-    _validate_finetune_contract(checkpoint)
+    is_domain_adaptation = _validate_finetune_contract(checkpoint)
     expected = {
         "seen_species": expected_seen_species,
         "unseen_species": expected_unseen_species,
-        "training_species": expected_training_species,
-        "training_species_hash": ordered_names_hash(expected_training_species),
         "text_prototype_hash": expected_text_prototype_hash,
         "canonical_prompt_hash": expected_canonical_prompt_hash,
         "bioclip_checkpoint": expected_bioclip_checkpoint,
     }
+    if not is_domain_adaptation:
+        expected.update(
+            {
+                "training_species": expected_training_species,
+                "training_species_hash": ordered_names_hash(expected_training_species),
+            }
+        )
+    else:
+        training_species = checkpoint.get("training_species")
+        if (
+            not isinstance(training_species, list)
+            or not set(training_species).issubset(expected_seen_species)
+            or checkpoint.get("training_species_hash")
+            != ordered_names_hash(training_species)
+        ):
+            raise ValueError(
+                "BioCLIP domain checkpoint has invalid paired training species"
+            )
     mismatches = {
         key: (checkpoint.get(key), value)
         for key, value in expected.items()

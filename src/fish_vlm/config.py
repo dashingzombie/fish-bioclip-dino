@@ -248,6 +248,25 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ConfigError(
             "training.distributed.strategy must be ddp for the frozen-encoder pipeline"
         )
+    domain = config.get("domain")
+    if domain is not None:
+        fraction = float(domain.get("validation_fraction", 0.0))
+        if not 0.0 < fraction < 1.0:
+            raise ConfigError("domain.validation_fraction must be between zero and one")
+        if model.get("bioclip_classifier", {}).get("enabled", False):
+            raise ConfigError("The all-image domain workflow forbids a BioCLIP classifier")
+        if not model.get("bioclip", {}).get("freeze_text_encoder", True):
+            raise ConfigError("The all-image domain workflow requires frozen BioCLIP text")
+        if int(config.get("slurm", {}).get("gpus", 1)) != 1:
+            raise ConfigError("The all-image GenomeDK workflow requires one GPU per job")
+        for branch in ("dino", "bioclip"):
+            patience = int(
+                domain.get(branch, {}).get("early_stopping_patience_epochs", 0)
+            )
+            if patience < 1:
+                raise ConfigError(
+                    f"domain.{branch}.early_stopping_patience_epochs must be positive"
+                )
 
 
 def data_path(config: dict[str, Any], key: str) -> Path:
