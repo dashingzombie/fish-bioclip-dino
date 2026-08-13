@@ -9,12 +9,8 @@ from fish_vlm.domain.workflow import build_all_data_plan
 def test_all_data_plan_parallelises_independent_one_gpu_branches() -> None:
     plan = build_all_data_plan("configs/all_data/common.yaml")
     jobs = {job["name"]: job for job in plan["jobs"]}
-    assert jobs["prepare-metadata"]["gpus"] == 0
-    assert all(
-        job["gpus"] == 1
-        for name, job in jobs.items()
-        if name != "prepare-metadata"
-    )
+    assert all(job["gpus"] == 1 for job in jobs.values())
+    assert all("#SBATCH --gpus=1" in job["script"] for job in jobs.values())
     assert jobs["dino-domain"]["depends_on"] == ["prepare-metadata"]
     assert jobs["bioclip-assets"]["depends_on"] == ["prepare-metadata"]
     assert jobs["bioclip-domain"]["depends_on"] == ["bioclip-assets"]

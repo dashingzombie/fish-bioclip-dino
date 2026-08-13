@@ -57,13 +57,13 @@ training image. The same deterministic split is used throughout.
 
 ## GenomeDK parallelism
 
-Metadata preparation requests no GPU. Every model/cache job requests exactly
-one GPU. DINO adaptation starts concurrently with BioCLIP asset construction;
+GenomeDK's submission filter requires an explicit GPU request even for metadata
+jobs, so every job requests exactly one GPU. DINO adaptation starts concurrently with BioCLIP asset construction;
 after each branch advances, DINO seen fine-tuning can overlap BioCLIP visual
 adaptation. Final inference waits for both resulting checkpoints.
 
 ```text
-prepare-metadata (CPU)
+prepare-metadata (1 GPU; required by GenomeDK policy)
 ├── dino-domain (1 GPU) ───────── dino-seen-finetune (1 GPU) ──┐
 └── bioclip-assets (1 GPU) ────── bioclip-domain (1 GPU) ───────┤
                                                                └── finalise (1 GPU)

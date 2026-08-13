@@ -55,7 +55,9 @@ def build_all_data_plan(
             ],
             "cache_scope": "shared",
             "stage_images": False,
-            "gpus": 0,
+            # GenomeDK's submission filter rejects jobs without an explicit
+            # GPU request, including lightweight metadata preparation.
+            "gpus": 1,
         },
         {
             "name": "bioclip-assets",
@@ -177,7 +179,7 @@ def build_all_data_plan(
         "version": 1,
         "config": common_path,
         "scheduler": "GenomeDK Slurm",
-        "gpu_contract": "zero GPUs for metadata; exactly one GPU for every model job",
+        "gpu_contract": "exactly one GPU for every GenomeDK job, including metadata preparation",
         "parallel_branches": [
             ["dino-domain", "bioclip-assets"],
             ["dino-seen-finetune", "bioclip-domain"],
