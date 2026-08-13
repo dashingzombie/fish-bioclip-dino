@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -55,9 +56,11 @@ def build_all_data_plan(
             ],
             "cache_scope": "shared",
             "stage_images": False,
-            # GenomeDK's submission filter rejects jobs without an explicit
-            # GPU request, including lightweight metadata preparation.
-            "gpus": 1,
+            "gpus": 0,
+            "partition": str(
+                config["domain"]["cpu_jobs"].get("partition", "normal")
+            ),
+            "resources": dict(config["domain"]["cpu_jobs"]),
         },
         {
             "name": "bioclip-assets",
@@ -69,6 +72,7 @@ def build_all_data_plan(
             "cache_scope": "shared",
             "stage_images": True,
             "gpus": 1,
+            "partition": str(config["slurm"]["partition"]),
         },
         {
             "name": "dino-domain",
@@ -84,6 +88,7 @@ def build_all_data_plan(
             "cache_scope": "dino_domain",
             "stage_images": True,
             "gpus": 1,
+            "partition": str(config["slurm"]["partition"]),
         },
         {
             "name": "bioclip-domain",
@@ -99,6 +104,7 @@ def build_all_data_plan(
             "cache_scope": "training",
             "stage_images": True,
             "gpus": 1,
+            "partition": str(config["slurm"]["partition"]),
         },
         {
             "name": "dino-seen-finetune",
@@ -107,10 +113,11 @@ def build_all_data_plan(
             "cache_scope": "training",
             "stage_images": True,
             "gpus": 1,
+            "partition": str(config["slurm"]["partition"]),
         },
         {
-            "name": "finalise",
-            "depends_on": ["dino-seen-finetune", "bioclip-domain"],
+            "name": "infer-seen",
+            "depends_on": ["dino-seen-finetune"],
             "commands": [
                 cli(
                     "infer",
@@ -123,6 +130,16 @@ def build_all_data_plan(
                     "--output",
                     str(test_predictions),
                 ),
+            ],
+            "cache_scope": "finalisation",
+            "stage_images": True,
+            "gpus": 1,
+            "partition": str(config["slurm"]["partition"]),
+        },
+        {
+            "name": "infer-unseen",
+            "depends_on": ["dino-seen-finetune", "bioclip-domain"],
+            "commands": [
                 cli(
                     "infer",
                     "--config",
@@ -136,6 +153,16 @@ def build_all_data_plan(
                     "--output",
                     str(unseen_predictions),
                 ),
+            ],
+            "cache_scope": "finalisation",
+            "stage_images": True,
+            "gpus": 1,
+            "partition": str(config["slurm"]["partition"]),
+        },
+        {
+            "name": "package",
+            "depends_on": ["infer-seen", "infer-unseen"],
+            "commands": [
                 cli(
                     "merge-submission",
                     "--test",
@@ -160,14 +187,28 @@ def build_all_data_plan(
                     str(zipped),
                 ),
             ],
-            "cache_scope": "finalisation",
-            "stage_images": True,
-            "gpus": 1,
+            "cache_scope": "shared",
+            "stage_images": False,
+            "gpus": 0,
+            "partition": str(
+                config["domain"]["cpu_jobs"].get("partition", "normal")
+            ),
+            "resources": dict(config["domain"]["cpu_jobs"]),
         },
     ]
     for job in jobs:
+        job_config = copy.deepcopy(config)
+        job_config["slurm"]["partition"] = job["partition"]
+        if job.get("resources"):
+            job_config["workflow"].update(
+                {
+                    key: value
+                    for key, value in job["resources"].items()
+                    if key in {"cpus", "memory", "time_limit"}
+                }
+            )
         job["script"] = render_workflow_batch_script(
-            config,
+            job_config,
             job_name=f"fish-all-{job['name']}",
             commands=job["commands"],
             gpus=int(job["gpus"]),
@@ -179,10 +220,14 @@ def build_all_data_plan(
         "version": 1,
         "config": common_path,
         "scheduler": "GenomeDK Slurm",
-        "gpu_contract": "exactly one GPU for every GenomeDK job, including metadata preparation",
+        "resource_contract": {
+            "cpu_jobs": "partition normal with no GPU request",
+            "gpu_jobs": "one GPU per job on the configured GPU partition",
+        },
         "parallel_branches": [
             ["dino-domain", "bioclip-assets"],
             ["dino-seen-finetune", "bioclip-domain"],
+            ["infer-seen", "infer-unseen"],
         ],
         "official_test_and_unseen_use": "unlabeled domain adaptation only",
         "jobs": jobs,

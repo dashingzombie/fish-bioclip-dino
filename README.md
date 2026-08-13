@@ -57,16 +57,24 @@ training image. The same deterministic split is used throughout.
 
 ## GenomeDK parallelism
 
-GenomeDK's submission filter requires an explicit GPU request even for metadata
-jobs, so every job requests exactly one GPU. DINO adaptation starts concurrently with BioCLIP asset construction;
+Metadata and packaging use GenomeDK's CPU `normal` partition without requesting
+a GPU. Every model/cache/inference job requests one GPU from `gpu-h200`. DINO
+adaptation starts concurrently with BioCLIP asset construction;
 after each branch advances, DINO seen fine-tuning can overlap BioCLIP visual
 adaptation. Final inference waits for both resulting checkpoints.
 
+These are separate dependency-aware `sbatch` jobs, intentionally not a Slurm
+array: their commands, resources, and parent dependencies differ. Jobs with the
+same satisfied parent are submitted independently and may occupy different GPU
+nodes at the same time.
+
 ```text
-prepare-metadata (1 GPU; required by GenomeDK policy)
+prepare-metadata (CPU, normal)
 ├── dino-domain (1 GPU) ───────── dino-seen-finetune (1 GPU) ──┐
 └── bioclip-assets (1 GPU) ────── bioclip-domain (1 GPU) ───────┤
-                                                               └── finalise (1 GPU)
+                                                               ├── infer-seen (1 GPU) ───┐
+                                                               └── infer-unseen (1 GPU) ──┤
+                                                                                            └── package (CPU, normal)
 ```
 
 Configurations live under `configs/all_data/`. The current augmentation,

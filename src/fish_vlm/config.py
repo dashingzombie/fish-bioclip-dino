@@ -259,6 +259,11 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ConfigError("The all-image domain workflow requires frozen BioCLIP text")
         if int(config.get("slurm", {}).get("gpus", 1)) != 1:
             raise ConfigError("The all-image GenomeDK workflow requires one GPU per job")
+        cpu_jobs = domain.get("cpu_jobs", {})
+        if not str(cpu_jobs.get("partition", "")).strip():
+            raise ConfigError("domain.cpu_jobs.partition must name a CPU partition")
+        if int(cpu_jobs.get("cpus", 0)) < 1:
+            raise ConfigError("domain.cpu_jobs.cpus must be positive")
         for branch in ("dino", "bioclip"):
             patience = int(
                 domain.get(branch, {}).get("early_stopping_patience_epochs", 0)

@@ -67,6 +67,11 @@ inference:
 
 domain:
   validation_fraction: 0.10
+  cpu_jobs:
+    partition: normal
+    cpus: 16
+    memory: 32G
+    time_limit: "2:00:00"
   manifest_path: outputs/all_data/domain_manifest.json
   prompt_inventory_path: outputs/all_data/prompt_inventory.json
   dino_output_dir: outputs/all_data/dino_domain
