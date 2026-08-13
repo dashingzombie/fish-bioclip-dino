@@ -26,9 +26,6 @@ training:
   max_epochs: 200
   validation_interval_steps: 1000
   validation_interval_epochs: 1.0
-  batch_size: 32
-  eval_batch_size: 64
-  gradient_accumulation_steps: 2
   early_stopping_patience_evaluations: 30
   checkpoint_name: best.pt
   metrics_name: best.json

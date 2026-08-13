@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ from fish_vlm.prototypes.image_teacher import (
     lookup_teacher_embeddings,
 )
 from fish_vlm.training.early_stopping import EarlyStopping
+from fish_vlm.training.wandb_logging import DomainWandbLogger
 from fish_vlm.utils.hashing import ordered_names_hash, prompts_hash, stable_json_hash
 from fish_vlm.utils.io import read_json, torch_save_atomic, write_json
 from fish_vlm.utils.seed import seed_everything
@@ -354,6 +356,20 @@ def train_bioclip_domain(
     logit_scale = float(training["logit_scale"])
     use_amp = bool(training.get("use_amp", True)) and device.type == "cuda"
     metrics: dict[str, Any] = {}
+    wandb_logger = (
+        DomainWandbLogger(
+            config,
+            stage="bioclip",
+            trainable_parameters=sum(
+                parameter.numel()
+                for parameter in model.parameters()
+                if parameter.requires_grad
+            ),
+            output_checkpoint=str(best_path),
+        )
+        if config.get("wandb", {}).get("enabled", False)
+        else None
+    )
     for epoch in range(start_epoch, max_epochs):
         if epoch == partial_epochs and partial_epochs > 0:
             _configure_visual_phase(
@@ -362,6 +378,9 @@ def train_bioclip_domain(
                 last_blocks=int(training["unfreeze_last_blocks"]),
             )
             optimizer = make_optimizer()
+        epoch_started = time.perf_counter()
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         model.train()
         running: dict[str, float] = {}
         samples = 0
@@ -535,6 +554,26 @@ def train_bioclip_domain(
             }
             torch_save_atomic(checkpoint, best_path)
             write_json(output_dir / "metrics" / "best.json", metrics)
+            if wandb_logger is not None:
+                wandb_logger.record_best(epoch=epoch + 1, metrics=metrics)
+        if wandb_logger is not None:
+            wandb_logger.log_epoch(
+                epoch=epoch + 1,
+                metrics=metrics,
+                learning_rates={
+                    str(index): float(group["lr"])
+                    for index, group in enumerate(optimizer.param_groups)
+                },
+                throughput=samples / max(time.perf_counter() - epoch_started, 1e-9),
+                gpu_peak_memory_bytes=(
+                    torch.cuda.max_memory_allocated(device)
+                    if device.type == "cuda"
+                    else None
+                ),
+                improved=improved,
+            )
         if should_stop:
             break
+    if wandb_logger is not None:
+        wandb_logger.finish()
     return metrics

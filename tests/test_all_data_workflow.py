@@ -80,6 +80,8 @@ def test_bioclip_domain_configuration_has_no_classifier_head() -> None:
     assert not config["model"]["bioclip"]["freeze_image_encoder"]
     assert config["domain"]["validation_fraction"] == 0.10
     assert config["domain"]["bioclip"]["early_stopping_patience_epochs"] == 30
+    assert config["wandb"]["enabled"]
+    assert config["wandb"]["name"] == "bioclip-classifier-free-all-images"
 
 
 def test_dino_seen_configuration_uses_class_aware_epoch_validation() -> None:
@@ -89,3 +91,11 @@ def test_dino_seen_configuration_uses_class_aware_epoch_validation() -> None:
     assert config["training"]["class_balanced_sampling"]
     assert config["training"]["validation_interval_epochs"] == 1.0
     assert config["training"]["early_stopping_patience_evaluations"] == 30
+    assert config["wandb"]["enabled"]
+    assert config["wandb"]["name"] == "dino-seen-after-domain-adaptation"
+
+
+def test_dino_domain_configuration_enables_wandb() -> None:
+    config = load_config("configs/all_data/dino_domain.yaml")
+    assert config["wandb"]["enabled"]
+    assert config["wandb"]["name"] == "dino-self-supervised-all-images"

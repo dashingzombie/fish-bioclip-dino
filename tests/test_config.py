@@ -10,17 +10,18 @@ from fish_vlm.config import ConfigError, deep_merge, load_config, validate_confi
 def test_deep_merge_and_base_config_load() -> None:
     merged = deep_merge({"a": {"b": 1, "c": 2}}, {"a": {"b": 3}})
     assert merged == {"a": {"b": 3, "c": 2}}
-    config = load_config(Path("configs/train/projection_only.yaml"))
+    config = load_config(Path("configs/all_data/common.yaml"))
     assert config["training"]["stage"] == "projection_only"
     assert config["model"]["bioclip"]["checkpoint"] == "hf-hub:imageomics/bioclip-2"
-    assert config["training"]["batch_size"] == 512
+    assert config["training"]["batch_size"] == 32
     assert config["training"]["max_steps"] == 4000
-    assert config["training"]["gradient_accumulation_steps"] == 1
+    assert config["training"]["gradient_accumulation_steps"] == 2
     assert "epochs" not in config["training"]
-    assert config["slurm"]["gpus"] == 4
-    assert config["slurm"]["cpus"] == 128
-    assert config["slurm"]["memory"] == "700G"
+    assert config["slurm"]["gpus"] == 1
+    assert config["slurm"]["cpus"] == 16
+    assert config["slurm"]["memory"] == "96G"
     assert config["slurm"]["partition"] == "gpu-h200"
+    assert config["domain"]["cpu_jobs"]["partition"] == "normal"
 
 
 def test_epoch_configuration_is_rejected() -> None:
@@ -30,48 +31,25 @@ def test_epoch_configuration_is_rejected() -> None:
         validate_config(config)
 
 
-def test_priority_bioclip_configs_are_explicit_and_loadable() -> None:
-    linear = load_config("configs/train/bioclip_linear_probe.yaml")
-    partial = load_config("configs/train/bioclip_partial_finetune.yaml")
-    full = load_config("configs/train/bioclip_full_finetune.yaml")
-    assert linear["model"]["tuning_mode"] == "linear_probe"
-    assert partial["model"]["backbone"] == "bioclip2"
-    assert partial["model"]["tuning_mode"] == "partial_finetune"
-    assert partial["model"]["unfreeze_last_blocks"] == 1
-    assert partial["optimiser"]["backbone_lr"] == 1.0e-6
-    assert full["model"]["tuning_mode"] == "full_finetune"
-
-
-def test_hybrid_config_is_full_dino_with_scientific_name_fallback() -> None:
-    config = load_config("configs/hybrid/dino_seen.yaml")
+def test_dino_seen_config_is_full_dino_with_no_bioclip_classifier() -> None:
+    config = load_config("configs/all_data/dino_finetune.yaml")
     assert config["training"]["stage"] == "dino_seen_classifier"
-    assert config["training"]["max_steps"] == 16000
+    assert config["training"]["max_steps"] == 200000
     assert config["model"]["dino"]["trainable_scope"] == "full"
     assert config["loss"]["supervised_species"]["enabled"]
     assert config["loss"]["supervised_species"]["label_smoothing"] == 0.1
     assert not config["loss"]["dino_text_classification"]["enabled"]
-    weights = config["text"]["prototype_ensemble"]["weights"]
-    assert weights["scientific_name"] == 1.0
-    assert all(
-        value == 0.0
-        for name, value in weights.items()
-        if name != "scientific_name"
-    )
-    assert config["validation"]["pseudo_unseen"]["split_seed"] == 42
+    assert not config["model"]["bioclip_classifier"]["enabled"]
+    assert config["training"]["early_stopping_patience_evaluations"] == 30
 
 
-def test_long_bioclip_config_preserves_text_and_zero_shot_alignment() -> None:
-    config = load_config("configs/hybrid/bioclip_long.yaml")
-    assert config["training"]["stage"] == "bioclip_full_finetune"
-    assert config["training"]["max_steps"] == 20000
+def test_bioclip_domain_config_preserves_classifier_free_text_alignment() -> None:
+    config = load_config("configs/all_data/bioclip_domain.yaml")
     assert config["model"]["tuning_mode"] == "full_finetune"
     assert config["model"]["bioclip"]["freeze_text_encoder"]
     assert not config["model"]["bioclip"]["freeze_image_encoder"]
-    assert config["loss"]["native_bioclip_text"]["enabled"]
-    assert config["loss"]["bioclip_pretrained_distillation"]["enabled"]
-    assert config["loss"]["bioclip_supervised_species"]["label_smoothing"] == 0.1
-    assert config["validation"]["unseen_selection_branch"] == "bioclip_native"
-    assert config["validation"]["pseudo_unseen"]["split_seed"] == 42
+    assert not config["model"]["bioclip_classifier"]["enabled"]
+    assert config["domain"]["bioclip"]["early_stopping_patience_epochs"] == 30
 
 
 def test_invalid_unseen_supervised_mode(tmp_path: Path) -> None:

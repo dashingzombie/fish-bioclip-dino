@@ -56,9 +56,14 @@ def _read_yaml(path: Path) -> dict[str, Any]:
     return loaded
 
 
-def load_config(path: str | Path) -> dict[str, Any]:
-    """Load YAML with optional recursive ``defaults`` composition."""
-    config_path = Path(path).resolve()
+def _compose_config(
+    config_path: Path, *, loading: tuple[Path, ...] = ()
+) -> dict[str, Any]:
+    """Compose defaults fragments without validating incomplete fragments."""
+    config_path = config_path.resolve()
+    if config_path in loading:
+        chain = " -> ".join(str(path) for path in (*loading, config_path))
+        raise ConfigError(f"Circular configuration defaults: {chain}")
     raw = _read_yaml(config_path)
     defaults = raw.pop("defaults", [])
     if isinstance(defaults, (str, Path)):
@@ -70,8 +75,17 @@ def load_config(path: str | Path) -> dict[str, Any]:
         default_path = Path(str(default))
         if not default_path.is_absolute():
             default_path = (config_path.parent / default_path).resolve()
-        merged = deep_merge(merged, load_config(default_path))
-    resolved = _expand_env(deep_merge(merged, raw))
+        merged = deep_merge(
+            merged,
+            _compose_config(default_path, loading=(*loading, config_path)),
+        )
+    return deep_merge(merged, raw)
+
+
+def load_config(path: str | Path) -> dict[str, Any]:
+    """Compose YAML defaults, then validate the complete resolved config."""
+    config_path = Path(path).resolve()
+    resolved = _expand_env(_compose_config(config_path))
     validate_config(resolved)
     resolved["_config_path"] = str(config_path)
     return resolved

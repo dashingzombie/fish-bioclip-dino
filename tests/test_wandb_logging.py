@@ -4,6 +4,7 @@ from typing import Any
 
 from fish_vlm.config import load_config
 from fish_vlm.training.wandb_logging import (
+    DomainWandbLogger,
     ScientificWandbLogger,
     compact_step_payload,
     interpretable_metric_name,
@@ -60,7 +61,7 @@ def test_metric_names_are_direct_and_interpretable() -> None:
 
 
 def test_wandb_logger_uses_small_periodic_payload_and_best_summary() -> None:
-    config = load_config("configs/train/projection_only.yaml")
+    config = load_config("configs/all_data/dino_finetune.yaml")
     fake = FakeWandb()
     logger = ScientificWandbLogger(
         config, trainable_parameters=123, wandb_module=fake
@@ -96,5 +97,37 @@ def test_wandb_logger_uses_small_periodic_payload_and_best_summary() -> None:
     assert fake.run.summary["best/step"] == 200
     assert fake.run.summary["best/score/estimated_overall_accuracy"] == 0.7
     assert "resolved_configuration" not in fake.init_kwargs["config"]
+    logger.finish()
+    assert fake.run.finished
+
+
+def test_domain_wandb_logger_records_epoch_metrics_and_checkpoint() -> None:
+    config = load_config("configs/all_data/dino_domain.yaml")
+    fake = FakeWandb()
+    logger = DomainWandbLogger(
+        config,
+        stage="dino",
+        trainable_parameters=456,
+        output_checkpoint="outputs/all_data/dino_domain/checkpoints/best.pt",
+        wandb_module=fake,
+    )
+    logger.log_epoch(
+        epoch=3,
+        metrics={"train_loss": 1.2, "validation_loss": 0.8},
+        learning_rates={"backbone": 1e-5, "head": 1e-4},
+        throughput=31.0,
+        gpu_peak_memory_bytes=2 * 1024**3,
+        improved=True,
+    )
+    payload = fake.run.logged[-1]
+    assert payload["epoch"] == 3
+    assert payload["loss/train_loss"] == 1.2
+    assert payload["loss/validation_loss"] == 0.8
+    assert payload["optimization/learning_rate/backbone"] == 1e-5
+    assert payload["system/gpu_peak_memory_gib"] == 2.0
+    logger.record_best(epoch=3, metrics={"validation_loss": 0.8})
+    assert fake.run.summary["best/epoch"] == 3
+    assert fake.run.summary["output/checkpoint"].endswith("best.pt")
+    assert fake.init_kwargs["job_type"] == "dino_domain_adaptation"
     logger.finish()
     assert fake.run.finished

@@ -3,3 +3,8 @@ defaults: [common.yaml]
 model:
   dino:
     trainable_scope: full
+
+wandb:
+  group: all-data-domain-adaptation
+  name: dino-self-supervised-all-images
+  tags: [fish, dino, self-supervised, all-images]

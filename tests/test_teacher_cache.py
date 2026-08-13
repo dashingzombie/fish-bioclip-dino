@@ -75,7 +75,7 @@ def test_existing_teacher_cache_is_reused_before_model_setup(tmp_path: Path) -> 
 def test_teacher_cli_checks_cache_before_runtime_loading(
     monkeypatch, tmp_path: Path
 ) -> None:
-    path = tmp_path / "bioclip_images" / "train_embeddings.pt"
+    path = tmp_path / "bioclip_images" / "all_embeddings.pt"
     build_image_teacher_cache(
         TinyBioClip(),
         DataLoader(
@@ -93,9 +93,7 @@ def test_teacher_cli_checks_cache_before_runtime_loading(
         output_path=path,
         device="cpu",
     )
-    monkeypatch.setattr(cli, "load_labels", lambda config: {"a.jpg": "A fish"})
-    monkeypatch.setattr(cli, "split_filenames", lambda path: ["a.jpg"])
-    monkeypatch.setattr(cli, "data_path", lambda config, key: tmp_path / key)
+    monkeypatch.setattr(cli, "_all_image_filenames", lambda config: ["a.jpg"])
     monkeypatch.setattr(
         cli,
         "_cache_path",
@@ -106,9 +104,4 @@ def test_teacher_cli_checks_cache_before_runtime_loading(
         raise AssertionError("Runtime must not load when the teacher cache is valid")
 
     monkeypatch.setattr(cli, "build_runtime", forbidden)
-    cli._build_teacher(
-        {
-            "model": {"bioclip": {"checkpoint": "mock"}},
-            "data": {"train_split": "train.pkl"},
-        }
-    )
+    cli._build_all_teacher({"model": {"bioclip": {"checkpoint": "mock"}}})

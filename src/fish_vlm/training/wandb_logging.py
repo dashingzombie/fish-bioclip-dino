@@ -168,3 +168,82 @@ class ScientificWandbLogger:
     def finish(self) -> None:
         """Finish without uploading model or checkpoint artifacts."""
         self.run.finish()
+
+
+class DomainWandbLogger:
+    """Epoch logger for classifier-free DINO and BioCLIP adaptation."""
+
+    def __init__(
+        self,
+        config: dict[str, Any],
+        *,
+        stage: str,
+        trainable_parameters: int,
+        output_checkpoint: str,
+        wandb_module: Any | None = None,
+    ) -> None:
+        if wandb_module is None:
+            import wandb as wandb_module
+
+        wandb_config = config["wandb"]
+        stage_config = dict(config["domain"][stage])
+        stage_name = f"{stage}_domain_adaptation"
+        self.run = wandb_module.init(
+            project=wandb_config["project"],
+            name=wandb_config.get("name") or f"{stage_name}-seed-{config['seed']}",
+            group=wandb_config.get("group") or "all-data-domain-adaptation",
+            job_type=stage_name,
+            tags=list(wandb_config.get("tags", ["fish", stage, "domain-adaptation"])),
+            mode=wandb_config.get("mode", "online"),
+            config={
+                "seed": int(config["seed"]),
+                "stage": stage_name,
+                "domain": stage_config,
+                "validation_fraction": float(config["domain"]["validation_fraction"]),
+                "model": config["model"],
+                "prototype_ensemble": config["text"]["prototype_ensemble"],
+                "pseudo_unseen": config["validation"]["pseudo_unseen"],
+            },
+        )
+        self.run.define_metric("epoch")
+        self.run.define_metric("*", step_metric="epoch")
+        self.run.summary["model/trainable_parameters"] = int(trainable_parameters)
+        self.run.summary["model/dino_name"] = config["model"]["dino"]["name"]
+        self.run.summary["model/bioclip_checkpoint"] = config["model"]["bioclip"]["checkpoint"]
+        self.run.summary["output/checkpoint"] = output_checkpoint
+
+    def log_epoch(
+        self,
+        *,
+        epoch: int,
+        metrics: dict[str, Any],
+        learning_rates: dict[str, float],
+        throughput: float,
+        gpu_peak_memory_bytes: int | None,
+        improved: bool,
+    ) -> None:
+        payload: dict[str, float | int | str] = {
+            "epoch": int(epoch),
+            "system/throughput_images_per_second": float(throughput),
+            "selection/improved": int(improved),
+        }
+        for name, value in metrics.items():
+            if isinstance(value, (int, float)):
+                prefix = "loss" if "loss" in name else "validation"
+                payload[f"{prefix}/{name}"] = float(value)
+            elif isinstance(value, str):
+                payload[f"state/{name}"] = value
+        for name, value in learning_rates.items():
+            payload[f"optimization/learning_rate/{name}"] = float(value)
+        if gpu_peak_memory_bytes is not None:
+            payload["system/gpu_peak_memory_gib"] = gpu_peak_memory_bytes / (1024**3)
+        self.run.log(payload)
+
+    def record_best(self, *, epoch: int, metrics: dict[str, Any]) -> None:
+        self.run.summary["best/epoch"] = int(epoch)
+        for name, value in metrics.items():
+            if isinstance(value, (int, float)):
+                self.run.summary[f"best/{name}"] = float(value)
+
+    def finish(self) -> None:
+        self.run.finish()

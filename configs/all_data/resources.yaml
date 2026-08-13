@@ -1,0 +1,42 @@
+# Edit this file for GenomeDK resources and memory-fitting batch sizes.
+
+training:
+  batch_size: 32
+  eval_batch_size: 64
+  gradient_accumulation_steps: 2
+  num_workers: 8
+  eval_num_workers: 4
+
+domain:
+  cpu_jobs:
+    partition: normal
+    cpus: 16
+    memory: 32G
+    time_limit: "2:00:00"
+  dino:
+    batch_size: 16
+    eval_batch_size: 32
+    num_workers: 8
+  bioclip:
+    batch_size: 32
+    eval_batch_size: 64
+    num_workers: 8
+
+slurm:
+  partition: gpu-h200
+  account: worm-species
+  gpus: 1
+  cpus: 16
+  memory: 96G
+  time_limit: "36:00:00"
+  job_name: fish-all-data
+  log_dir: outputs/all_data/slurm
+  script_dir: outputs/all_data/slurm
+  node_cache_dir: fish-all-data-cache
+  environment_activate: source .venv/bin/activate
+  work_dir: .
+
+workflow:
+  cpus: 16
+  memory: 96G
+  time_limit: "36:00:00"

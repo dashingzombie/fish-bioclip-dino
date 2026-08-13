@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,7 @@ from fish_vlm.domain.datasets import DomainMultiViewDataset, collate_domain_view
 from fish_vlm.domain.transforms import build_dino_domain_transforms
 from fish_vlm.models.dino import load_dino, pooled_features
 from fish_vlm.training.early_stopping import EarlyStopping
+from fish_vlm.training.wandb_logging import DomainWandbLogger
 from fish_vlm.utils.io import read_json, torch_save_atomic, write_json
 from fish_vlm.utils.seed import seed_everything
 
@@ -209,11 +211,29 @@ def train_dino_domain(config: dict[str, Any], *, resume: bool = False) -> dict[s
     use_amp = bool(training.get("use_amp", True)) and device.type == "cuda"
     amp_dtype = torch.bfloat16
     metrics: dict[str, Any] = {}
+    wandb_logger = (
+        DomainWandbLogger(
+            config,
+            stage="dino",
+            trainable_parameters=sum(
+                parameter.numel()
+                for module in (student, head)
+                for parameter in module.parameters()
+                if parameter.requires_grad
+            ),
+            output_checkpoint=str(best_path),
+        )
+        if config.get("wandb", {}).get("enabled", False)
+        else None
+    )
     center_momentum = float(training["center_momentum"])
     base_momentum = float(training["teacher_momentum"])
     total_steps = max(1, max_epochs * len(train_loader))
     step = start_epoch * len(train_loader)
     for epoch in range(start_epoch, max_epochs):
+        epoch_started = time.perf_counter()
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(device)
         student.train()
         head.train()
         running = 0.0
@@ -312,6 +332,26 @@ def train_dino_domain(config: dict[str, Any], *, resume: bool = False) -> dict[s
         if improved:
             torch_save_atomic(common, best_path)
             write_json(output_dir / "metrics" / "best.json", metrics)
+            if wandb_logger is not None:
+                wandb_logger.record_best(epoch=epoch + 1, metrics=metrics)
+        if wandb_logger is not None:
+            wandb_logger.log_epoch(
+                epoch=epoch + 1,
+                metrics=metrics,
+                learning_rates={
+                    str(group.get("name", index)): float(group["lr"])
+                    for index, group in enumerate(optimizer.param_groups)
+                },
+                throughput=samples / max(time.perf_counter() - epoch_started, 1e-9),
+                gpu_peak_memory_bytes=(
+                    torch.cuda.max_memory_allocated(device)
+                    if device.type == "cuda"
+                    else None
+                ),
+                improved=improved,
+            )
         if should_stop:
             break
+    if wandb_logger is not None:
+        wandb_logger.finish()
     return metrics

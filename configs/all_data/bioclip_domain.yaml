@@ -6,3 +6,8 @@ model:
   bioclip:
     freeze_text_encoder: true
     freeze_image_encoder: false
+
+wandb:
+  group: all-data-domain-adaptation
+  name: bioclip-classifier-free-all-images
+  tags: [fish, bioclip, classifier-free, all-images]

@@ -214,7 +214,6 @@ def build_all_data_plan(
             gpus=int(job["gpus"]),
             cache_scope=job["cache_scope"],
             stage_images=bool(job["stage_images"]),
-            stage_all_images=True,
         )
     plan = {
         "version": 1,

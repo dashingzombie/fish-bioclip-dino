@@ -1,4 +1,4 @@
-"""Command-line interface for the complete multimodal pipeline."""
+"""Focused command-line interface for the all-image training workflow."""
 
 from __future__ import annotations
 
@@ -13,22 +13,12 @@ from fish_vlm.config import data_path, load_config
 from fish_vlm.data.catalog import load_labels, split_filenames
 from fish_vlm.data.collate import collate_multiview
 from fish_vlm.data.datasets import FishMultiViewDataset
-from fish_vlm.data.image_cache import (
-    build_deterministic_image_cache,
-    load_deterministic_image_cache,
-    validate_image_filenames,
-)
 from fish_vlm.data.descriptions import prepare_canonical_prompts
+from fish_vlm.data.image_cache import validate_image_filenames
 from fish_vlm.data.partitions import create_and_save_partitions
 from fish_vlm.data.pseudo_unseen import save_pseudo_unseen_splits
 from fish_vlm.data.transforms import transform_fingerprint
-from fish_vlm.evaluation.calibrate import calibrate_checkpoint
-from fish_vlm.evaluation.gate_calibrate import calibrate_gate_checkpoint
-from fish_vlm.evaluation.evaluate import evaluate_bioclip_zero_shot, evaluate_checkpoint
-from fish_vlm.evaluation.model_selection import select_model_checkpoints
-from fish_vlm.evaluation.stages import evaluate_stage_checkpoints
-from fish_vlm.inference.predict import predict_gated_split, predict_split
-from fish_vlm.inference.audit import audit_unseen_inference
+from fish_vlm.inference.predict import predict_split
 from fish_vlm.inference.submission import merge_predictions, package_submission
 from fish_vlm.inference.validation import validate_submission
 from fish_vlm.models.bioclip import load_bioclip
@@ -41,7 +31,6 @@ from fish_vlm.prototypes.text import (
     load_prompts,
     load_text_prototype_cache,
 )
-from fish_vlm.slurm.launcher import launch_slurm
 from fish_vlm.training.train import (
     _cache_path,
     _data_processed_path,
@@ -50,87 +39,40 @@ from fish_vlm.training.train import (
     load_runtime_image_cache,
     train_from_config,
 )
-from fish_vlm.utils.io import read_json, write_json
 from fish_vlm.utils.logging import configure_logging
-from fish_vlm.workflow import write_pipeline_summary
 
 
-def _config_parser(subparsers: Any, name: str, *, checkpoint: bool = False) -> argparse.ArgumentParser:
+def _config_parser(
+    subparsers: Any, name: str, *, checkpoint: bool = False
+) -> argparse.ArgumentParser:
     parser = subparsers.add_parser(name)
     parser.add_argument("--config", required=True)
     if checkpoint:
-        parser.add_argument("--checkpoint")
+        parser.add_argument("--checkpoint", required=True)
     return parser
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Create all stable command contracts."""
     parser = argparse.ArgumentParser(prog="fish-vlm")
     parser.add_argument("--verbose", action="store_true")
     commands = parser.add_subparsers(dest="command", required=True)
-    _config_parser(commands, "prepare-prompts")
-    _config_parser(commands, "build-text-prototypes")
-    _config_parser(commands, "build-image-cache")
-    _config_parser(commands, "build-teacher-cache")
-    _config_parser(commands, "build-all-teacher-cache")
-    _config_parser(commands, "prepare-domain-data")
+    for name in (
+        "prepare-prompts",
+        "make-pseudo-unseen",
+        "prepare-domain-data",
+        "build-text-prototypes",
+        "build-all-teacher-cache",
+        "train",
+    ):
+        _config_parser(commands, name)
     dino_domain = _config_parser(commands, "train-dino-domain")
     dino_domain.add_argument("--resume", action="store_true")
     bioclip_domain = _config_parser(commands, "train-bioclip-domain")
     bioclip_domain.add_argument("--resume", action="store_true")
-    _config_parser(commands, "make-pseudo-unseen")
-    _config_parser(commands, "train")
-    evaluate = _config_parser(commands, "evaluate", checkpoint=True)
-    evaluate.add_argument("--output")
-    evaluate.add_argument("--selection-report")
-    evaluate.add_argument(
-        "--purpose", choices=("seen", "unseen", "joint")
-    )
-    evaluate_stages = _config_parser(commands, "evaluate-stages")
-    evaluate_stages.add_argument(
-        "--output",
-        default="outputs/metrics/stage_comparison.json",
-    )
-    select_models = _config_parser(commands, "select-models")
-    select_models.add_argument(
-        "--output",
-        default="outputs/metrics/model_selection.json",
-    )
-    calibrate = _config_parser(commands, "calibrate", checkpoint=True)
-    calibrate.add_argument("--output", default="outputs/metrics/calibration.json")
-    calibrate.add_argument("--selection-report")
-    calibrate.add_argument(
-        "--purpose", choices=("seen", "unseen", "joint")
-    )
-    calibrate_gate = _config_parser(
-        commands, "calibrate-gate", checkpoint=True
-    )
-    calibrate_gate.add_argument("--output", required=True)
-    calibrate_gate.add_argument("--threshold-source")
-    calibrate_gate.add_argument("--bioclip-checkpoint")
     infer = _config_parser(commands, "infer", checkpoint=True)
-    infer.add_argument("--split", choices=("test", "unseen"))
+    infer.add_argument("--split", choices=("test", "unseen"), required=True)
     infer.add_argument("--output", required=True)
-    infer.add_argument("--calibration")
     infer.add_argument("--bioclip-checkpoint")
-    infer.add_argument("--selection-report")
-    infer.add_argument(
-        "--purpose", choices=("seen", "unseen", "joint")
-    )
-    infer_gated = _config_parser(
-        commands, "infer-gated", checkpoint=True
-    )
-    infer_gated.add_argument("--split", choices=("test", "unseen"), required=True)
-    infer_gated.add_argument("--gate", required=True)
-    infer_gated.add_argument("--bioclip-checkpoint")
-    infer_gated.add_argument("--output", required=True)
-    verify_unseen = _config_parser(
-        commands, "verify-unseen-inference", checkpoint=True
-    )
-    verify_unseen.add_argument(
-        "--output",
-        default="outputs/metrics/unseen_inference_audit.json",
-    )
     merge = commands.add_parser("merge-submission")
     merge.add_argument("--test", required=True)
     merge.add_argument("--unseen", required=True)
@@ -142,32 +84,6 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--submission", required=True)
     image_list = _config_parser(commands, "list-images")
     image_list.add_argument("--output", required=True)
-    image_list.add_argument("--missing-image-cache-only", action="store_true")
-    joint_sweep = commands.add_parser("joint-sweep")
-    joint_sweep.add_argument(
-        "--phase",
-        choices=("loss", "optimiser", "architecture", "training", "all"),
-        default="loss",
-    )
-    joint_sweep.add_argument("--confirm-top", type=int)
-    joint_sweep.add_argument("--submit", action="store_true")
-    joint_sweep.add_argument("--dry-run", action="store_true")
-    joint_sweep.add_argument("--resume", action="store_true")
-    joint_sweep.add_argument("--auto-chain", action="store_true")
-    joint_sweep.add_argument("--everything", action="store_true")
-    joint_sweep.add_argument("--report-only", action="store_true")
-    joint_sweep.add_argument("--max-concurrent", type=int, default=8)
-    joint_sweep.add_argument(
-        "--pipeline-config",
-        default="configs/pipeline.yaml",
-    )
-    joint_sweep.add_argument(
-        "--output-root",
-        default="outputs/sweep_pipelines/joint_supervised_text",
-    )
-    slurm = _config_parser(commands, "slurm")
-    slurm.add_argument("--dry-run", action="store_true")
-    _config_parser(commands, "pipeline-summary")
     return parser
 
 
@@ -189,19 +105,23 @@ def _prepare(config: dict[str, Any]) -> dict[str, str]:
 
 def _build_text(config: dict[str, Any]) -> None:
     partitions = ensure_partitions(config)
-    prompts = load_prompts(_data_processed_path(config, "canonical_prompts.json"))
+    prompts = load_prompts(
+        _data_processed_path(config, "canonical_prompts.json")
+    )
     checkpoint = config["model"]["bioclip"]["checkpoint"]
     cache_specs = [
         (
             candidate_set,
             getattr(partitions, f"{candidate_set}_species"),
-            _cache_path(config, "text", f"text_prototypes_{candidate_set}.pt"),
+            _cache_path(
+                config, "text", f"text_prototypes_{candidate_set}.pt"
+            ),
         )
         for candidate_set in ("seen", "unseen", "all")
     ]
-    missing_specs = []
     from fish_vlm.utils.hashing import prompts_hash
 
+    missing = []
     for candidate_set, names, path in cache_specs:
         if path.exists():
             try:
@@ -216,13 +136,12 @@ def _build_text(config: dict[str, Any]) -> None:
                     f"Existing {candidate_set} text cache at {path} is invalid: {error}"
                 ) from error
         else:
-            missing_specs.append((candidate_set, names, path))
-    if not missing_specs:
+            missing.append((candidate_set, names, path))
+    if not missing:
         return
-
     model, _, _, tokenizer, embedding_dim = load_bioclip(checkpoint)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    for candidate_set, names, path in cache_specs:
+    for _, names, path in cache_specs:
         if path.exists():
             load_text_prototype_cache(
                 path,
@@ -239,78 +158,38 @@ def _build_text(config: dict[str, Any]) -> None:
                 tokenizer,
                 checkpoint,
                 path,
-                batch_size=int(config["training"].get("eval_batch_size", 128)),
+                batch_size=int(config["training"]["eval_batch_size"]),
                 device=device,
             )
 
 
-def _build_teacher(config: dict[str, Any]) -> None:
-    labels = load_labels(config)
-    filenames = [name for name in split_filenames(data_path(config, "train_split")) if name in labels]
-    output_path = _cache_path(config, "bioclip_images", "train_embeddings.pt")
-    checkpoint = config["model"]["bioclip"]["checkpoint"]
-    if output_path.exists():
-        try:
-            load_image_teacher_cache(
-                output_path,
-                expected_filenames=filenames,
-                checkpoint=checkpoint,
-                transform_hash=None,
-            )
-        except ValueError as error:
-            raise ValueError(
-                f"Existing image-teacher cache at {output_path} is invalid: {error}"
-            ) from error
-        return
-
-    bundle = build_runtime(config, device="cpu")
-    if bundle.model.bioclip is None:
-        raise ValueError("Teacher cache requires the native BioCLIP image path")
-    dataset = FishMultiViewDataset(
-        filenames,
-        data_path(config, "images_dir"),
-        bundle.dino_eval_transform,
-        bundle.bioclip_eval_transform,
-        labels,
-        {name: index for index, name in enumerate(bundle.partitions.seen_species)},
-        image_cache=load_runtime_image_cache(
-            config,
-            bundle,
-            filenames,
-            training=False,
-        ),
-    )
-    from torch.utils.data import DataLoader
-
-    loader = DataLoader(
-        dataset,
-        batch_size=int(config["training"]["eval_batch_size"]),
-        shuffle=False,
-        num_workers=int(config["training"].get("num_workers", 4)),
-        collate_fn=collate_multiview,
-    )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    build_image_teacher_cache(
-        bundle.model.bioclip,
-        loader,
-        checkpoint=bundle.bioclip_checkpoint,
-        transform_hash=transform_fingerprint(bundle.bioclip_eval_transform),
-        output_path=output_path,
-        device=device,
-        storage_dtype=torch.bfloat16 if config["training"].get("teacher_cache_dtype") == "bfloat16" else torch.float16,
-    )
-
-
-def _build_all_teacher(config: dict[str, Any]) -> None:
-    """Cache original BioCLIP embeddings for the exact all-image union."""
-    filenames = list(
+def _all_image_filenames(config: dict[str, Any]) -> list[str]:
+    return list(
         dict.fromkeys(
             name
             for split in ("train", "test", "unseen")
-            for name in split_filenames(data_path(config, f"{split}_split"))
+            for name in validate_image_filenames(
+                split_filenames(data_path(config, f"{split}_split"))
+            )
         )
     )
-    output_path = _cache_path(config, "bioclip_images", "all_embeddings.pt")
+
+
+def _write_image_list(config: dict[str, Any], output_path: str | Path) -> int:
+    names = _all_image_filenames(config)
+    destination = Path(output_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(
+        b"".join(name.encode("utf-8") + b"\0" for name in names)
+    )
+    return len(names)
+
+
+def _build_all_teacher(config: dict[str, Any]) -> None:
+    filenames = _all_image_filenames(config)
+    output_path = _cache_path(
+        config, "bioclip_images", "all_embeddings.pt"
+    )
     checkpoint = config["model"]["bioclip"]["checkpoint"]
     if output_path.exists():
         load_image_teacher_cache(
@@ -322,7 +201,7 @@ def _build_all_teacher(config: dict[str, Any]) -> None:
         return
     bundle = build_runtime(config, device="cpu")
     if bundle.model.bioclip is None:
-        raise ValueError("All-image teacher cache requires the BioCLIP image path")
+        raise ValueError("All-image teacher cache requires BioCLIP")
     dataset = FishMultiViewDataset(
         filenames,
         data_path(config, "images_dir"),
@@ -359,111 +238,7 @@ def _build_all_teacher(config: dict[str, Any]) -> None:
     )
 
 
-def _image_split_filenames(config: dict[str, Any]) -> dict[str, list[str]]:
-    return {
-        split: validate_image_filenames(
-            split_filenames(data_path(config, f"{split}_split"))
-        )
-        for split in ("train", "test", "unseen")
-    }
-
-
-def _write_image_list(
-    config: dict[str, Any],
-    output_path: str | Path,
-    *,
-    missing_image_cache_only: bool = False,
-) -> int:
-    """Write the exact required image union as a NUL-delimited tar file list."""
-    splits = _image_split_filenames(config)
-    if missing_image_cache_only:
-        cache_root = _cache_path(config, "image_transforms")
-        required_splits: dict[str, list[str]] = {}
-        for split, filenames in splits.items():
-            path = cache_root / split
-            if not path.exists():
-                required_splits[split] = filenames
-                continue
-            load_deterministic_image_cache(
-                path,
-                expected_filenames=filenames,
-                dino_model_name=str(config["model"]["dino"]["name"]),
-                bioclip_checkpoint=str(config["model"]["bioclip"]["checkpoint"]),
-            )
-        splits = required_splits
-    names = list(
-        dict.fromkeys(
-            name
-            for filenames in splits.values()
-            for name in filenames
-        )
-    )
-    destination = Path(output_path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_bytes(b"".join(name.encode("utf-8") + b"\0" for name in names))
-    return len(names)
-
-
-def _build_image_caches(config: dict[str, Any]) -> None:
-    """Build missing deterministic split caches before training starts."""
-    splits = _image_split_filenames(config)
-    dino_name = str(config["model"]["dino"]["name"])
-    bioclip_checkpoint = str(config["model"]["bioclip"]["checkpoint"])
-    cache_root = _cache_path(config, "image_transforms")
-    missing: list[str] = []
-    for split, filenames in splits.items():
-        path = cache_root / split
-        if path.exists():
-            try:
-                load_deterministic_image_cache(
-                    path,
-                    expected_filenames=filenames,
-                    dino_model_name=dino_name,
-                    bioclip_checkpoint=bioclip_checkpoint,
-                )
-            except ValueError as error:
-                raise ValueError(
-                    f"Existing {split} image-transform cache is invalid: {error}"
-                ) from error
-        else:
-            missing.append(split)
-    if not missing:
-        return
-
-    bundle = build_runtime(config, device="cpu")
-    dino_hash = transform_fingerprint(bundle.dino_eval_transform)
-    bioclip_hash = transform_fingerprint(bundle.bioclip_eval_transform)
-    cache_config = config["data"].get("deterministic_transform_cache", {})
-    for split, filenames in splits.items():
-        path = cache_root / split
-        if path.exists():
-            load_deterministic_image_cache(
-                path,
-                expected_filenames=filenames,
-                dino_model_name=dino_name,
-                bioclip_checkpoint=bioclip_checkpoint,
-                dino_transform_hash=dino_hash,
-                bioclip_transform_hash=bioclip_hash,
-            )
-            continue
-        build_deterministic_image_cache(
-            path=path,
-            filenames=filenames,
-            images_dir=data_path(config, "images_dir"),
-            dino_transform=bundle.dino_eval_transform,
-            bioclip_transform=bundle.bioclip_eval_transform,
-            dino_model_name=dino_name,
-            bioclip_checkpoint=bioclip_checkpoint,
-            dino_transform_hash=dino_hash,
-            bioclip_transform_hash=bioclip_hash,
-            dtype=str(cache_config.get("dtype", "float16")),
-            batch_size=int(cache_config.get("batch_size", 128)),
-            num_workers=int(cache_config.get("num_workers", 16)),
-        )
-
-
 def main(argv: list[str] | None = None) -> int:
-    """Dispatch one command and return a shell exit code."""
     args = build_parser().parse_args(argv)
     configure_logging(args.verbose)
     if args.command == "merge-submission":
@@ -474,70 +249,11 @@ def main(argv: list[str] | None = None) -> int:
         output = package_submission(args.submission, args.output)
         print(json.dumps({"output": str(output)}))
         return 0
-    if args.command == "joint-sweep":
-        from fish_vlm.sweeps.joint import run_joint_sweeps
-
-        result = run_joint_sweeps(
-            phase=args.phase,
-            confirm_top=args.confirm_top,
-            submit=args.submit,
-            dry_run=args.dry_run,
-            max_concurrent=args.max_concurrent,
-            resume=args.resume,
-            auto_chain=args.auto_chain,
-            everything=args.everything,
-            report_only=args.report_only,
-            pipeline_config=args.pipeline_config,
-            output_root=args.output_root,
-        )
-        print(json.dumps(result, sort_keys=True))
-        return 0
-    if (
-        getattr(args, "selection_report", None)
-        and getattr(args, "purpose", None)
-    ):
-        selection = read_json(args.selection_report)["selection"][
-            args.purpose
-        ]
-        args.checkpoint = selection["checkpoint"]
-        if selection.get("inference_config"):
-            args.config = selection["inference_config"]
     config = load_config(args.config)
     if args.command == "list-images":
-        print(
-            json.dumps(
-                {
-                    "images": _write_image_list(
-                        config,
-                        args.output,
-                        missing_image_cache_only=args.missing_image_cache_only,
-                    )
-                }
-            )
-        )
+        print(json.dumps({"images": _write_image_list(config, args.output)}))
     elif args.command == "prepare-prompts":
         print(json.dumps({"prepared": len(_prepare(config))}))
-    elif args.command == "build-text-prototypes":
-        _build_text(config)
-    elif args.command == "build-image-cache":
-        _build_image_caches(config)
-    elif args.command == "build-teacher-cache":
-        _build_teacher(config)
-    elif args.command == "build-all-teacher-cache":
-        _build_all_teacher(config)
-    elif args.command == "prepare-domain-data":
-        from fish_vlm.domain.data import build_domain_manifest
-
-        manifest = build_domain_manifest(config)
-        print(json.dumps({"manifest": config["domain"]["manifest_path"], "hash": manifest["manifest_hash"]}))
-    elif args.command == "train-dino-domain":
-        from fish_vlm.domain.dino import train_dino_domain
-
-        print(json.dumps(train_dino_domain(config, resume=args.resume), sort_keys=True))
-    elif args.command == "train-bioclip-domain":
-        from fish_vlm.domain.bioclip import train_bioclip_domain
-
-        print(json.dumps(train_bioclip_domain(config, resume=args.resume), sort_keys=True))
     elif args.command == "make-pseudo-unseen":
         partitions = ensure_partitions(config)
         pseudo = config["validation"]["pseudo_unseen"]
@@ -549,76 +265,38 @@ def main(argv: list[str] | None = None) -> int:
             seeds=[int(seed) for seed in pseudo["seeds"]],
         )
         print(json.dumps({"splits": [split.to_dict() for split in splits]}))
+    elif args.command == "prepare-domain-data":
+        from fish_vlm.domain.data import build_domain_manifest
+
+        manifest = build_domain_manifest(config)
+        print(json.dumps({"manifest": config["domain"]["manifest_path"], "hash": manifest["manifest_hash"]}))
+    elif args.command == "build-text-prototypes":
+        _build_text(config)
+    elif args.command == "build-all-teacher-cache":
+        _build_all_teacher(config)
+    elif args.command == "train-dino-domain":
+        from fish_vlm.domain.dino import train_dino_domain
+
+        print(json.dumps(train_dino_domain(config, resume=args.resume), sort_keys=True))
+    elif args.command == "train-bioclip-domain":
+        from fish_vlm.domain.bioclip import train_bioclip_domain
+
+        print(json.dumps(train_bioclip_domain(config, resume=args.resume), sort_keys=True))
     elif args.command == "train":
         print(json.dumps(train_from_config(config), sort_keys=True))
-    elif args.command == "evaluate":
-        metrics = evaluate_checkpoint(config, args.checkpoint) if args.checkpoint else evaluate_bioclip_zero_shot(config)
-        if args.output:
-            write_json(args.output, metrics)
-        print(json.dumps(metrics, sort_keys=True))
-    elif args.command == "evaluate-stages":
-        result = evaluate_stage_checkpoints(config)
-        write_json(args.output, result)
-        print(json.dumps(result, sort_keys=True))
-    elif args.command == "select-models":
-        result = select_model_checkpoints(config, args.output)
-        write_json(args.output, result)
-        print(json.dumps(result, sort_keys=True))
-    elif args.command == "calibrate":
-        if not args.checkpoint:
-            raise ValueError("--checkpoint is required for calibration")
-        result = calibrate_checkpoint(config, args.checkpoint, args.output)
-        print(json.dumps(result, sort_keys=True))
-    elif args.command == "calibrate-gate":
-        if not args.checkpoint:
-            raise ValueError("--checkpoint is required for gate calibration")
-        result = calibrate_gate_checkpoint(
-            config,
-            args.checkpoint,
-            args.output,
-            threshold_source=args.threshold_source,
-            bioclip_checkpoint_path=args.bioclip_checkpoint,
-        )
-        print(json.dumps(result, sort_keys=True))
     elif args.command == "infer":
-        if not args.checkpoint:
-            raise ValueError("--checkpoint is required for inference")
-        split = args.split or config.get("evaluation", {}).get("official_split")
-        if split not in {"test", "unseen"}:
-            raise ValueError("Set --split or evaluation.official_split to test/unseen")
         result = predict_split(
             config,
             args.checkpoint,
-            args.output,
-            split=split,
-            calibration_path=args.calibration,
-            bioclip_checkpoint_path=args.bioclip_checkpoint,
-        )
-        print(json.dumps({"predictions": len(result), "output": args.output}))
-    elif args.command == "infer-gated":
-        if not args.checkpoint:
-            raise ValueError("--checkpoint is required for gated inference")
-        result = predict_gated_split(
-            config,
-            args.checkpoint,
-            args.gate,
             args.output,
             split=args.split,
             bioclip_checkpoint_path=args.bioclip_checkpoint,
         )
         print(json.dumps({"predictions": len(result), "output": args.output}))
-    elif args.command == "verify-unseen-inference":
-        if not args.checkpoint:
-            raise ValueError("--checkpoint is required for unseen verification")
-        result = audit_unseen_inference(config, args.checkpoint)
-        write_json(args.output, result)
-        print(json.dumps(result, sort_keys=True))
     elif args.command == "validate-submission":
-        print(json.dumps(validate_submission(args.submission, config), sort_keys=True))
-    elif args.command == "slurm":
-        print(launch_slurm(config, dry_run=args.dry_run))
-    elif args.command == "pipeline-summary":
-        print(json.dumps(write_pipeline_summary(config), sort_keys=True))
+        print(json.dumps(validate_submission(config, args.submission), sort_keys=True))
+    else:
+        raise ValueError(f"Unsupported command: {args.command}")
     return 0
 
 

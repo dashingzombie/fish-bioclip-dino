@@ -68,6 +68,13 @@ array: their commands, resources, and parent dependencies differ. Jobs with the
 same satisfied parent are submitted independently and may occupy different GPU
 nodes at the same time.
 
+Each GPU job stages its own copy of the 99,924-image union because node-local
+NVMe is not shared between nodes. When multiple jobs land on the same node,
+they use a dataset-hashed `flock` under `/tmp`: one job stages and validates the
+images, and the others reuse that completed directory. The logs print lock,
+reuse/start, periodic tar checkpoint, verified file-count, and elapsed-time
+messages.
+
 ```text
 prepare-metadata (CPU, normal)
 ├── dino-domain (1 GPU) ───────── dino-seen-finetune (1 GPU) ──┐
@@ -77,9 +84,20 @@ prepare-metadata (CPU, normal)
                                                                                             └── package (CPU, normal)
 ```
 
-Configurations live under `configs/all_data/`. The current augmentation,
-learning-rate, loss-weight, validation, and patience values are all explicit in
+Configurations live under `configs/all_data/`. Augmentation, learning-rate,
+loss-weight, validation, and patience values are explicit in
 `configs/all_data/common.yaml` and `configs/all_data/dino_finetune.yaml`.
+
+For routine resource changes, edit only `configs/all_data/resources.yaml`. It
+contains the CPU/GPU partitions, cores, memory, time limits, worker counts, and
+DINO-domain, BioCLIP-domain, and supervised-DINO batch parameters.
+
+W&B is enabled for all three training jobs: DINO domain adaptation, BioCLIP
+domain adaptation, and supervised DINO fine-tuning. Each gets a separate run
+under the `fish-dino-bioclip` project and logs epoch/step losses, validation
+and early-stopping selection metrics, learning rates, throughput, peak GPU
+memory, and the best-checkpoint path. Checkpoints remain on GenomeDK; they are not
+uploaded as W&B artifacts.
 
 ## Validation boundary
 
@@ -91,7 +109,3 @@ make all-data-dry-run
 Tests and dry-runs validate code, data-role, dependency, and output contracts.
 They do not establish pretrained-model availability, GPU memory fit, GenomeDK
 queue behavior, completed training, or competition accuracy.
-
-The earlier six-recipe gated workflow remains available through `make
-hybrid-dry-run`, `make hybrid`, and `make hybrid-resume` for recovery and
-comparison, but it is not the recommended entry point on this branch.
